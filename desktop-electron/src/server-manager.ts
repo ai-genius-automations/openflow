@@ -44,7 +44,7 @@ export function isServerRunning(cli: string): boolean {
 /** Check if the server is reachable via HTTP */
 export function isServerReachable(): Promise<boolean> {
   return new Promise((resolve) => {
-    const req = http.get('http://localhost:42012/api/health', (res) => {
+    const req = http.get('http://localhost:42010/api/health', (res) => {
       resolve(res.statusCode === 200);
       res.resume();
     });
@@ -74,10 +74,10 @@ export function stopServer(cli: string): Promise<boolean> {
   });
 }
 
-/** Stop whatever process is listening on port 42012 (for external/unknown servers) */
+/** Stop whatever process is listening on port 42010 (for external/unknown servers) */
 export function stopServerOnPort(): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile('fuser', ['-k', '42012/tcp'], { timeout: 10000 }, (err) => {
+    execFile('fuser', ['-k', '42010/tcp'], { timeout: 10000 }, (err) => {
       resolve(!err);
     });
   });

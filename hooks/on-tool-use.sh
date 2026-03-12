@@ -2,7 +2,7 @@
 # OpenFlow Claude Code Hook — fires on every tool use
 # Install by adding to ~/.claude/settings.json hooks
 
-OPENFLOW_URL="${OPENFLOW_URL:-http://localhost:42012}"
+OPENFLOW_URL="${OPENFLOW_URL:-http://localhost:42010}"
 
 # Send event to OpenFlow (fire and forget, don't block Claude)
 curl -s -X POST "$OPENFLOW_URL/api/events" \

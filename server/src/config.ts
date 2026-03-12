@@ -34,7 +34,7 @@ if (wantTmux && !hasTmux) {
 }
 
 export const config = {
-  port: parseInt(process.env.PORT || '42012', 10),
+  port: parseInt(process.env.PORT || '42010', 10),
   // Listen on :: (dual-stack) to accept both IPv4 and IPv6 connections.
   // This lets the browser use 127.0.0.1 and [::1] as separate hosts,
   // doubling the per-host connection limit (6→12) and preventing

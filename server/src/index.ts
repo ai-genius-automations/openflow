@@ -265,7 +265,7 @@ async function start() {
   console.log(`\n🌊 OpenFlow running at http://localhost:${config.port}`);
   console.log(`   API: http://localhost:${config.port}/api`);
   if (config.isDev) {
-    console.log(`   Dashboard: http://localhost:42013 (Vite dev server)`);
+    console.log(`   Dashboard: http://localhost:42011 (Vite dev server)`);
   }
 }
 

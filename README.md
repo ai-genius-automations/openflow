@@ -68,7 +68,7 @@ npm run dev
 ```
 
 - **Dashboard:** http://localhost:5173
-- **API Server:** http://localhost:42012
+- **API Server:** http://localhost:42010
 
 ---
 
@@ -158,7 +158,7 @@ cp .env.example .env
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `PORT` | `42012` | Server port |
+| `PORT` | `42010` | Server port |
 | `OPENFLOW_TOKEN` | *(none)* | Auth token for API/WebSocket — leave empty for local use |
 | `DB_PATH` | `~/.openflow/openflow.db` | SQLite database path |
 | `LOG_LEVEL` | `info` | Log verbosity (`trace` / `debug` / `info` / `warn` / `error`) |

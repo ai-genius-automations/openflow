@@ -30,7 +30,7 @@ interface AgentGuideModalProps {
 }
 
 export function AgentGuideModal({ onClose, projectName, projectPath, task, additionalInstructions }: AgentGuideModalProps) {
-  const baseUrl = `${window.location.protocol}//${window.location.hostname}:42012`;
+  const baseUrl = `${window.location.protocol}//${window.location.hostname}:42010`;
   const [copiedAll, setCopiedAll] = useState(false);
   const hasContext = !!(projectName && projectPath);
 

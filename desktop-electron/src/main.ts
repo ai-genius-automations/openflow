@@ -26,7 +26,7 @@ function createWindow() {
 
   // Handle external links — open in system browser instead of Electron
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
-    if (url.startsWith('http://localhost:42012')) {
+    if (url.startsWith('http://localhost:42010')) {
       return { action: 'allow' };
     }
     shell.openExternal(url);
@@ -35,7 +35,7 @@ function createWindow() {
 
   // Intercept navigation to external URLs
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    if (!url.startsWith('http://localhost:42012')) {
+    if (!url.startsWith('http://localhost:42010')) {
       event.preventDefault();
       shell.openExternal(url);
     }
@@ -43,7 +43,7 @@ function createWindow() {
 
   // In dev mode, load from Vite dev server; in production, load from the server
   const isDev = !!process.env.ELECTRON_ENABLE_LOGGING;
-  mainWindow.loadURL(isDev ? 'http://localhost:42013' : 'http://localhost:42012');
+  mainWindow.loadURL(isDev ? 'http://localhost:42011' : 'http://localhost:42010');
 
   // Close-to-tray: hide window instead of quitting
   mainWindow.on('close', (event) => {
@@ -73,7 +73,7 @@ app.whenReady().then(async () => {
   ipcMain.handle('app-quit', () => app.exit(0));
   registerSpeechHandlers();
 
-  // Start server if port 42012 is not reachable (regardless of PID file state)
+  // Start server if port 42010 is not reachable (regardless of PID file state)
   let reachable = await isServerReachable();
   if (!reachable) {
     console.log('[OpenFlow] Server not reachable, starting...');
@@ -90,7 +90,7 @@ app.whenReady().then(async () => {
       console.warn('[OpenFlow] Failed to start server');
     }
   } else {
-    console.log('[OpenFlow] Server already reachable on port 42012');
+    console.log('[OpenFlow] Server already reachable on port 42010');
   }
 
   createWindow();

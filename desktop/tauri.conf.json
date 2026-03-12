@@ -5,7 +5,7 @@
   "identifier": "com.aigenius.openflow",
   "build": {
     "frontendDist": "../dashboard/dist",
-    "devUrl": "http://localhost:42012"
+    "devUrl": "http://localhost:42010"
   },
   "app": {
     "withGlobalTauri": true,
