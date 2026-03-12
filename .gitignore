@@ -1,0 +1,17 @@
+node_modules/
+dist/
+*.db
+.env
+.env.local
+.env.production
+*.db-shm
+*.db-wal
+.devcortex
+.devcortex-cli/
+.claude/
+.claude-flow/
+.ruflo/
+.swarm/
+.hive-mind/
+.openflow
+.mcp.json

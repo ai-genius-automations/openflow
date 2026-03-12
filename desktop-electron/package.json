@@ -1,0 +1,66 @@
+{
+  "name": "openflow-desktop",
+  "version": "0.1.0",
+  "description": "OpenFlow Desktop App",
+  "author": {
+    "name": "AI Genius Automations",
+    "email": "support@aigeniusautomations.com"
+  },
+  "homepage": "https://github.com/ai-genius-automations/openflow",
+  "license": "Apache-2.0 WITH Commons-Clause",
+  "main": "dist/main.js",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "start": "npm run build && electron . --no-sandbox",
+    "start:dev": "npm run build && ELECTRON_ENABLE_LOGGING=1 electron . --no-sandbox",
+    "dist": "npm run build && electron-builder",
+    "dist:linux": "npm run build && electron-builder --linux",
+    "dist:mac": "npm run build && electron-builder --mac",
+    "dist:win": "npm run build && electron-builder --win"
+  },
+  "build": {
+    "appId": "com.aigenius.openflow",
+    "productName": "OpenFlow",
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "dist/**",
+      "icons/**",
+      "package.json"
+    ],
+    "linux": {
+      "target": [
+        { "target": "deb", "arch": ["x64"] },
+        { "target": "AppImage", "arch": ["x64"] }
+      ],
+      "category": "Development",
+      "icon": "icons",
+      "executableName": "openflow-desktop"
+    },
+    "mac": {
+      "target": [
+        { "target": "dmg", "arch": ["x64", "arm64"] }
+      ],
+      "category": "public.app-category.developer-tools",
+      "icon": "icons/icon.icns"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] }
+      ],
+      "icon": "icons/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.7.0"
+  }
+}

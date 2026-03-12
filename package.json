@@ -1,0 +1,30 @@
+{
+  "name": "openflow",
+  "version": "0.1.0",
+  "description": "AI coding session orchestration dashboard — launch, monitor, and manage Claude Code sessions from a web UI",
+  "type": "module",
+  "scripts": {
+    "dev": "concurrently \"npm run dev:server\" \"npm run dev:dashboard\"",
+    "dev:server": "cd server && npm run dev",
+    "dev:dashboard": "cd dashboard && npm run dev",
+    "build": "npm run build:dashboard && npm run build:server",
+    "build:server": "cd server && npm run build",
+    "build:dashboard": "cd dashboard && npm run build",
+    "start": "cd server && npm start",
+    "install:all": "npm install && cd server && npm install && cd ../dashboard && npm install",
+    "clean": "cd server && rm -rf dist && cd ../dashboard && rm -rf dist"
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.0"
+  },
+  "author": "AI Genius Automations <support@aigeniusautomations.com>",
+  "license": "Apache-2.0 WITH Commons-Clause",
+  "homepage": "https://github.com/ai-genius-automations/openflow",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ai-genius-automations/openflow.git"
+  },
+  "dependencies": {
+    "@xterm/addon-web-links": "^0.12.0"
+  }
+}

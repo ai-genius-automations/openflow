@@ -1,0 +1,1125 @@
+import { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { createPortal } from 'react-dom';
+import { useQuery, useQueryClient } from '@tanstack/react-query';
+import { Monitor, FolderTree, Code2, GitBranch, Plus, X, Download, LayoutGrid, Maximize2, Minimize2, ExternalLink, Globe, Zap, Bot, TerminalSquare } from 'lucide-react';
+import { Terminal } from './Terminal';
+import { FileExplorer } from './FileExplorer';
+import { GitPanel } from './GitPanel';
+import { SessionLauncher } from './SessionLauncher';
+import { WebPageView } from './WebPageView';
+import { api } from '../lib/api';
+import { DesktopUpdateBanner } from './DesktopUpdateBanner';
+
+interface ProjectViewProps {
+  projectId: string;
+  projectPath: string;
+  projectName: string;
+  active?: boolean;
+  /** When true, disconnect terminal WebSockets (another view is using the sessions) */
+  terminalsSuspended?: boolean;
+  /** When set, switch to this terminal session ID and clear it */
+  focusSessionId?: string | null;
+  onFocusSessionHandled?: () => void;
+}
+
+interface ExplorerInstance {
+  id: string;
+  label: string;
+}
+
+interface TerminalInstance {
+  id: string; // session ID
+  label: string;
+}
+
+interface WebPageInstance {
+  id: string;
+  label: string;
+  url: string;
+}
+
+type ActiveMode = 'terminal' | 'explorer' | 'events' | 'git';
+
+interface PersistedState {
+  activeMode: ActiveMode;
+  explorerInstances: ExplorerInstance[];
+  activeExplorerId: string | null;
+  terminalInstances: TerminalInstance[];
+  activeTerminalId: string | null;
+  webPageInstances?: WebPageInstance[];
+  activeWebPageId?: string | null;
+  /** When true, the "new session" launcher tab is active instead of a terminal */
+  showLauncher: boolean;
+}
+
+let nextExplorerSeq = 1;
+
+function storageKey(projectId: string) {
+  return `openflow-project-${projectId}`;
+}
+
+function loadPersistedState(projectId: string): PersistedState | null {
+  try {
+    const raw = localStorage.getItem(storageKey(projectId));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed && parsed.activeMode && Array.isArray(parsed.explorerInstances)) {
+      return parsed;
+    }
+  } catch {}
+  return null;
+}
+
+function persistState(projectId: string, state: PersistedState) {
+  try {
+    localStorage.setItem(storageKey(projectId), JSON.stringify(state));
+  } catch {}
+}
+
+/** Remove all localStorage entries for a project and its explorer instances */
+export function cleanupProjectStorage(projectId: string) {
+  try {
+    const raw = localStorage.getItem(storageKey(projectId));
+    if (raw) {
+      const parsed = JSON.parse(raw);
+      if (parsed?.explorerInstances) {
+        for (const inst of parsed.explorerInstances) {
+          localStorage.removeItem(`openflow-explorer-${inst.id}`);
+        }
+      }
+    }
+    localStorage.removeItem(storageKey(projectId));
+  } catch {}
+}
+
+const sidebarButtons = [
+  { id: 'terminal' as const, icon: Monitor, title: 'Terminal' },
+  { id: 'explorer' as const, icon: FolderTree, title: 'File Explorer' },
+  { id: 'git' as const, icon: GitBranch, title: 'Source Control' },
+] as const;
+
+export function ProjectView({ projectId, projectPath, projectName: _projectName, active = true, terminalsSuspended = false, focusSessionId, onFocusSessionHandled }: ProjectViewProps) {
+  const queryClient = useQueryClient();
+
+  // Fetch project data for SessionLauncher
+  const { data: projectsData } = useQuery({
+    queryKey: ['projects'],
+    queryFn: () => api.projects.list(),
+  });
+  const project = projectsData?.projects.find((p) => p.id === projectId);
+
+  // Fetch running sessions for this project
+  // No refetchInterval — driven by WebSocket invalidation (websocket.ts).
+  const { data: sessionsData } = useQuery({
+    queryKey: ['sessions'],
+    queryFn: () => api.sessions.list(),
+  });
+  const projectSessions = useMemo(
+    () => (sessionsData?.sessions || []).filter(
+      (s) => s.project_id === projectId && (s.status === 'running' || s.status === 'detached' || s.status === 'pending')
+    ),
+    [sessionsData, projectId]
+  );
+
+  // Initialize from persisted state or defaults
+  const [initialized] = useState(() => {
+    const saved = loadPersistedState(projectId);
+    if (saved) {
+      for (const e of saved.explorerInstances) {
+        const match = e.id.match(/-explorer-(\d+)$/);
+        if (match) nextExplorerSeq = Math.max(nextExplorerSeq, parseInt(match[1]) + 1);
+      }
+    }
+    return saved;
+  });
+
+  const [activeMode, setActiveMode] = useState<ActiveMode>(
+    initialized?.activeMode ?? 'terminal'
+  );
+
+  // Discover external hivemind sessions available for adoption (on-demand only, no polling)
+  const { data: discoverableData, refetch: refetchDiscoverable } = useQuery({
+    queryKey: ['discoverable-sessions', projectPath],
+    queryFn: () => api.sessions.discoverable(projectPath),
+    enabled: false, // on-demand only — triggered by user clicking "Scan"
+  });
+  const discoverableSessions = discoverableData?.sessions || [];
+
+  // Terminal instances — restored from persisted state + synced with server sessions
+  const [terminalInstances, setTerminalInstances] = useState<TerminalInstance[]>(
+    initialized?.terminalInstances ?? []
+  );
+  const [activeTerminalId, setActiveTerminalId] = useState<string | null>(
+    initialized?.activeTerminalId ?? null
+  );
+  const [showLauncher, setShowLauncher] = useState(
+    initialized?.showLauncher ?? true
+  );
+  const [showAllTerminals, setShowAllTerminals] = useState(false);
+  const [expandedTerminalId, setExpandedTerminalId] = useState<string | null>(null);
+
+  // Lazy-mount: only create xterm instances for terminals the user has actually viewed.
+  // Prevents 8+ xterm instances from initializing simultaneously on page refresh.
+  const mountedTerminals = useRef(new Set<string>());
+
+  // Web page instances
+  const [webPageInstances, setWebPageInstances] = useState<WebPageInstance[]>(
+    initialized?.webPageInstances ?? []
+  );
+  const [activeWebPageId, setActiveWebPageId] = useState<string | null>(
+    initialized?.activeWebPageId ?? null
+  );
+
+  // Dismiss grid view and expanded modal when the project tab loses focus
+  // so grid terminals don't interfere with other projects' terminal focus
+  useEffect(() => {
+    if (!active) {
+      setShowAllTerminals(false);
+      setExpandedTerminalId(null);
+    }
+  }, [active]);
+
+  // Track sessions the user explicitly closed so the sync effect doesn't re-add them
+  const closedSessionIds = useRef(new Set<string>());
+
+  // Sync terminal instances with server sessions (auto-detect running sessions)
+  const syncedRef = useRef(false);
+  useEffect(() => {
+    if (projectSessions.length === 0 && syncedRef.current) return;
+    if (projectSessions.length === 0 && !syncedRef.current) {
+      syncedRef.current = true;
+      return;
+    }
+    syncedRef.current = true;
+
+    // Prune closed IDs that are no longer in the server list (kill completed)
+    const aliveServerIds = new Set(projectSessions.map((s) => s.id));
+    for (const id of closedSessionIds.current) {
+      if (!aliveServerIds.has(id)) closedSessionIds.current.delete(id);
+    }
+
+    // Build a lookup of session type by ID
+    const sessionById = new Map(projectSessions.map((s) => [s.id, s]));
+
+    setTerminalInstances((prev) => {
+      const existingIds = new Set(prev.map((t) => t.id));
+      const aliveIds = new Set(projectSessions.map((s) => s.id));
+      // Build set of all session IDs the server knows about (any status)
+      const allServerIds = new Set((sessionsData?.sessions || []).map((s: any) => s.id));
+
+      // Remove sessions only if the server explicitly reports them as dead
+      // (completed/failed/cancelled). Keep sessions the server hasn't seen yet
+      // (just created locally, not in the poll response yet).
+      const filtered = prev.filter((t) => aliveIds.has(t.id) || !allServerIds.has(t.id));
+
+      // Relabel existing instances based on actual session data.
+      // This fixes tabs restored from localStorage with stale labels.
+      let hivemindCount = 0;
+      let terminalCount = 0;
+      let agentCount = 0;
+      const relabeled = filtered.map((t) => {
+        const session = sessionById.get(t.id);
+        if (!session) return t; // not yet known — keep as-is
+        const isTerminal = session.task === 'Terminal';
+        const isAgent = session.task.startsWith('Agent (');
+        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+        const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++hivemindCount;
+        const newLabel = `${prefix} ${num}`;
+        return newLabel !== t.label ? { ...t, label: newLabel } : t;
+      });
+
+      // Add new sessions not yet tracked (skip user-closed sessions)
+      const newTerminals: TerminalInstance[] = [];
+      for (const s of projectSessions) {
+        if (!existingIds.has(s.id) && !closedSessionIds.current.has(s.id)) {
+          const isTerminal = s.task === 'Terminal';
+          const isAgent = s.task.startsWith('Agent (');
+          const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+          const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++hivemindCount;
+          newTerminals.push({ id: s.id, label: `${prefix} ${num}` });
+        }
+      }
+
+      const result = [...relabeled, ...newTerminals];
+      // Sort: hivemind first, then agent, then terminal
+      const sortOrder = (label: string) => label.startsWith('Hivemind') ? 0 : label.startsWith('Agent') ? 1 : 2;
+      result.sort((a, b) => {
+        const diff = sortOrder(a.label) - sortOrder(b.label);
+        if (diff !== 0) return diff;
+        return 0; // preserve relative order within each group
+      });
+      // Check if anything actually changed
+      if (result.length === prev.length && newTerminals.length === 0 && result.every((t, i) => t.id === prev[i]?.id && t.label === prev[i]?.label)) return prev;
+
+      return result;
+    });
+  }, [projectSessions]);
+
+  // If terminals appeared and launcher was showing, switch to terminal
+  useEffect(() => {
+    if (terminalInstances.length > 0 && !activeTerminalId && !activeWebPageId) {
+      setActiveTerminalId(terminalInstances[0].id);
+      setShowLauncher(false);
+    }
+  }, [terminalInstances, activeTerminalId, activeWebPageId]);
+
+  // Focus a specific session when requested (e.g. from Active Sessions "go to" button or voice command)
+  useEffect(() => {
+    if (!focusSessionId) return;
+
+    // Voice command: show all terminals/hiveminds in grid
+    if (focusSessionId === '__voice_show_all') {
+      setShowAllTerminals(true);
+      setExpandedTerminalId(null);
+      onFocusSessionHandled?.();
+      return;
+    }
+
+    // Voice command: refresh active terminal display
+    if (focusSessionId === '__voice_refresh_tab') {
+      if (activeTerminalId) {
+        window.dispatchEvent(new CustomEvent('openflow:refresh-terminal', {
+          detail: { sessionId: activeTerminalId },
+        }));
+      }
+      onFocusSessionHandled?.();
+      return;
+    }
+
+    // Voice command: create new terminal or hivemind
+    const createMatch = focusSessionId.match(/^__voice_create_(terminal|hivemind)$/);
+    if (createMatch) {
+      const type = createMatch[1] as 'terminal' | 'hivemind';
+      console.log(`[STT] Creating new ${type}`);
+      if (type === 'terminal') {
+        api.sessions.create({ project_path: projectPath, mode: 'terminal', project_id: projectId })
+          .then((data) => {
+            if (data.session?.id) {
+              handleSessionCreated(data.session.id, undefined, 'terminal');
+              queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            }
+          })
+          .catch((err) => console.error(`[STT] Failed to create terminal:`, err));
+      } else {
+        const cfPrompt = (project?.ruflo_prompt ?? '').trim();
+        const task = cfPrompt
+          ? `Start up and ask me what I want you to do and NOTHING ELSE\n\n---\nAdditional Instructions:\n${cfPrompt}`
+          : 'Start up and ask me what I want you to do and NOTHING ELSE';
+        api.sessions.create({ project_path: projectPath, task, project_id: projectId })
+          .then((data) => {
+            if (data.session?.id) {
+              handleSessionCreated(data.session.id, undefined, 'hivemind');
+              queryClient.invalidateQueries({ queryKey: ['sessions'] });
+            }
+          })
+          .catch((err) => console.error(`[STT] Failed to create hivemind:`, err));
+      }
+      onFocusSessionHandled?.();
+      return;
+    }
+
+    // Voice command: close active terminal or hivemind
+    const closeMatch = focusSessionId.match(/^__voice_close_(terminal|hivemind)$/);
+    if (closeMatch) {
+      const type = closeMatch[1];
+      const targetLabel = type === 'hivemind' ? 'Hivemind' : 'Terminal';
+      // Close the currently active session if it matches the type
+      const activeInst = terminalInstances.find((t) => t.id === activeTerminalId);
+      if (activeInst && activeInst.label.startsWith(targetLabel)) {
+        console.log(`[STT] Closing active ${type}: ${activeInst.label} (${activeInst.id})`);
+        closeTerminal(activeInst.id);
+      } else {
+        console.warn(`[STT] Active session is not a ${type}, cannot close`);
+      }
+      onFocusSessionHandled?.();
+      return;
+    }
+
+    // Voice command: __voice_terminal_N or __voice_hivemind_N
+    const voiceMatch = focusSessionId.match(/^__voice_(terminal|hivemind)_(\d+)$/);
+    if (voiceMatch) {
+      const [, type, numStr] = voiceMatch;
+      const num = parseInt(numStr, 10);
+      // Find the Nth terminal or hivemind by label ordering
+      const targetLabel = type === 'hivemind' ? 'Hivemind' : 'Terminal';
+      const matching = terminalInstances.filter((t) =>
+        t.label.startsWith(targetLabel)
+      );
+      console.log(`[STT] Voice focus: type=${type} num=${num} targetLabel=${targetLabel}`,
+        'all instances:', terminalInstances.map(t => `${t.label} (${t.id})`),
+        'matching:', matching.map(t => `${t.label} (${t.id})`));
+      const target = matching[num - 1]; // 1-indexed
+      if (target) {
+        console.log(`[STT] Switching to: ${target.label} (${target.id})`);
+        setActiveTerminalId(target.id);
+        setShowLauncher(false);
+        setShowAllTerminals(false);
+        setActiveMode('terminal');
+      } else {
+        console.warn(`[STT] No ${targetLabel} #${num} found. Have ${matching.length} matching instances.`);
+      }
+      onFocusSessionHandled?.();
+      return;
+    }
+
+    // Regular session ID focus
+    if (terminalInstances.some((t) => t.id === focusSessionId)) {
+      setActiveTerminalId(focusSessionId);
+      setShowLauncher(false);
+      setShowAllTerminals(false);
+      setActiveMode('terminal');
+      onFocusSessionHandled?.();
+    }
+  }, [focusSessionId, terminalInstances]);
+
+  // Explorer instances
+  const [explorerInstances, setExplorerInstances] = useState<ExplorerInstance[]>(() => {
+    if (initialized?.explorerInstances?.length) {
+      return initialized.explorerInstances;
+    }
+    const id = `${projectId}-explorer-${nextExplorerSeq++}`;
+    return [{ id, label: 'Explorer 1' }];
+  });
+
+  const [activeExplorerId, setActiveExplorerId] = useState(
+    initialized?.activeExplorerId ?? explorerInstances[0].id
+  );
+
+  // Persist state whenever it changes
+  useEffect(() => {
+    persistState(projectId, {
+      activeMode,
+      explorerInstances,
+      activeExplorerId,
+      terminalInstances,
+      activeTerminalId,
+      webPageInstances,
+      activeWebPageId,
+      showLauncher,
+    });
+  }, [projectId, activeMode, explorerInstances, activeExplorerId, terminalInstances, activeTerminalId, webPageInstances, activeWebPageId, showLauncher]);
+
+  function handleOpenVSCode() {
+    api.files.openVSCode(projectPath).catch((err) => {
+      console.error('Failed to open VS Code:', err);
+    });
+  }
+
+  function handleSessionCreated(sessionId: string, _projectName?: string, mode?: 'hivemind' | 'terminal') {
+    const isTerminal = mode === 'terminal';
+    setTerminalInstances((prev) => {
+      if (prev.some((t) => t.id === sessionId)) return prev;
+      const prefix = isTerminal ? 'Terminal' : 'Hivemind';
+      const count = prev.filter(t => t.label.startsWith(prefix)).length + 1;
+      return [...prev, { id: sessionId, label: `${prefix} ${count}` }];
+    });
+    setActiveTerminalId(sessionId);
+    setActiveWebPageId(null);
+    setShowLauncher(false);
+  }
+
+  const [showAdoptMenu, setShowAdoptMenu] = useState(false);
+  const adoptMenuRef = useRef<HTMLDivElement>(null);
+  const adoptDropdownRef = useRef<HTMLDivElement>(null);
+
+  // Close adopt menu on outside click
+  useEffect(() => {
+    if (!showAdoptMenu) return;
+    function handleClick(e: MouseEvent) {
+      const target = e.target as Node;
+      if (adoptMenuRef.current?.contains(target)) return;
+      if (adoptDropdownRef.current?.contains(target)) return;
+      setShowAdoptMenu(false);
+    }
+    document.addEventListener('mousedown', handleClick);
+    return () => document.removeEventListener('mousedown', handleClick);
+  }, [showAdoptMenu]);
+
+  async function handleAdoptSession(socketPath: string) {
+    setShowAdoptMenu(false);
+    try {
+      const result = await api.sessions.adopt(socketPath, projectId);
+      const sid = result.session.id;
+
+      // Refresh sessions data so projectSessions includes the re-adopted session
+      // (needed for hideCursor prop which enables the force-resize redraw trick)
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['discoverable-sessions'] });
+
+      // If the tab already exists (re-adopting a popped-out session),
+      // force remount the Terminal component to reset its WebSocket state
+      const existing = terminalInstances.find((t) => t.id === sid);
+      if (existing) {
+        setTerminalInstances((prev) =>
+          prev.map((t) => (t.id === sid ? { ...t, id: sid + '_readopting' } : t))
+        );
+        setTimeout(() => {
+          setTerminalInstances((prev) =>
+            prev.map((t) => (t.id === sid + '_readopting' ? { ...t, id: sid } : t))
+          );
+          setActiveTerminalId(sid);
+        }, 100);
+      } else {
+        handleSessionCreated(sid, undefined, 'hivemind');
+      }
+    } catch (err) {
+      console.error('Failed to adopt session:', err);
+    }
+  }
+
+  function closeTerminal(id: string) {
+    closedSessionIds.current.add(id);
+    api.sessions.kill(id)
+      .then(() => queryClient.invalidateQueries({ queryKey: ['sessions'] }))
+      .catch((err) => console.error('Failed to kill session:', id, err));
+    setTerminalInstances((prev) => prev.filter((t) => t.id !== id));
+    if (activeTerminalId === id) {
+      const remaining = terminalInstances.filter((t) => t.id !== id);
+      if (remaining.length > 0) {
+        setActiveTerminalId(remaining[0].id);
+        setShowLauncher(false);
+      } else {
+        setActiveTerminalId(null);
+        setShowLauncher(true);
+      }
+    }
+  }
+
+  function closeTerminalTab(id: string) {
+    closedSessionIds.current.add(id);
+    setTerminalInstances((prev) => prev.filter((t) => t.id !== id));
+    if (activeTerminalId === id) {
+      const remaining = terminalInstances.filter((t) => t.id !== id);
+      if (remaining.length > 0) {
+        setActiveTerminalId(remaining[0].id);
+        setShowLauncher(false);
+      } else {
+        setActiveTerminalId(null);
+        setShowLauncher(true);
+      }
+    }
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+  }
+
+  async function reconnectTerminal(oldId: string) {
+    try {
+      const { session: oldSession } = await api.sessions.get(oldId).catch(() => ({ session: null }));
+      if (oldSession?.status === 'detached') {
+        await api.sessions.reconnect(oldId);
+        setTerminalInstances((prev) =>
+          prev.map((t) => (t.id === oldId ? { ...t, id: oldId + '_reconnecting' } : t))
+        );
+        setTimeout(() => {
+          setTerminalInstances((prev) =>
+            prev.map((t) => (t.id === oldId + '_reconnecting' ? { ...t, id: oldId } : t))
+          );
+          setActiveTerminalId(oldId);
+        }, 50);
+        return;
+      }
+
+      const result = await api.sessions.create({
+        project_path: projectPath,
+        task: 'Interactive ruflo session',
+      });
+      const newId = result.session.id;
+      setTerminalInstances((prev) =>
+        prev.map((t) => (t.id === oldId ? { ...t, id: newId } : t))
+      );
+      setActiveTerminalId(newId);
+    } catch (err) {
+      console.error('Failed to reconnect terminal:', err);
+    }
+  }
+
+  function addExplorer() {
+    const id = `${projectId}-explorer-${nextExplorerSeq++}`;
+    const label = `Explorer ${explorerInstances.length + 1}`;
+    setExplorerInstances((prev) => [...prev, { id, label }]);
+    setActiveExplorerId(id);
+  }
+
+  function closeExplorer(id: string) {
+    if (explorerInstances.length <= 1) return;
+    setExplorerInstances((prev) => prev.filter((e) => e.id !== id));
+    if (activeExplorerId === id) {
+      setActiveExplorerId(explorerInstances[0].id === id ? explorerInstances[1]?.id : explorerInstances[0].id);
+    }
+  }
+
+  let nextWebPageSeq = webPageInstances.length + 1;
+
+  function addWebPage(url: string) {
+    const id = `${projectId}-webpage-${Date.now()}`;
+    const label = `Web ${nextWebPageSeq++}`;
+    setWebPageInstances((prev) => [...prev, { id, label, url }]);
+    setActiveWebPageId(id);
+    setShowLauncher(false);
+    setShowAllTerminals(false);
+  }
+
+  function closeWebPage(id: string) {
+    setWebPageInstances((prev) => prev.filter((w) => w.id !== id));
+    if (activeWebPageId === id) {
+      const remaining = webPageInstances.filter((w) => w.id !== id);
+      if (remaining.length > 0) {
+        setActiveWebPageId(remaining[0].id);
+      } else {
+        setActiveWebPageId(null);
+        // If no terminals either, show launcher
+        if (terminalInstances.length === 0) {
+          setShowLauncher(true);
+        }
+      }
+    }
+  }
+
+  function handleWebPageCreated(url: string) {
+    addWebPage(url);
+  }
+
+  // Cross-tab refresh coordination
+  const [gitSavedFile, setGitSavedFile] = useState<string | null>(null);
+  const [explorerSavedFile, setExplorerSavedFile] = useState<string | null>(null);
+
+  const handleGitFileSaved = useCallback((filePath: string) => {
+    setGitSavedFile(filePath);
+  }, []);
+
+  const handleExplorerFileSaved = useCallback((filePath: string) => {
+    setExplorerSavedFile(filePath);
+  }, []);
+
+  const prevMode = useRef(activeMode);
+  useEffect(() => {
+    if (activeMode === 'git' && prevMode.current !== 'git' && explorerSavedFile) {
+      setExplorerSavedFile(null);
+    }
+    prevMode.current = activeMode;
+  }, [activeMode, explorerSavedFile]);
+
+  // Sub-tab bar for terminal and explorer modes
+  const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer';
+
+  const gridMode = showAllTerminals && !showLauncher && terminalInstances.length >= 2;
+
+  return (
+    <div className="h-full flex">
+      {/* Icon sidebar */}
+      <div
+        className="flex flex-col items-center py-2 gap-1 shrink-0"
+        style={{
+          width: 48,
+          background: 'var(--bg-secondary)',
+          borderRight: '1px solid var(--border)',
+        }}
+      >
+        {sidebarButtons.map(({ id, icon: Icon, title }) => {
+          const isActive = activeMode === id;
+          return (
+            <button
+              key={id}
+              onClick={() => setActiveMode(id)}
+              title={title}
+              className="flex items-center justify-center rounded-md transition-colors"
+              style={{
+                width: 36,
+                height: 36,
+                background: isActive ? 'var(--bg-tertiary)' : 'transparent',
+                color: isActive ? 'var(--accent)' : 'var(--text-secondary)',
+              }}
+            >
+              <Icon className="w-5 h-5" />
+            </button>
+          );
+        })}
+
+        {/* VS Code button */}
+        <button
+          onClick={handleOpenVSCode}
+          title="Open in VS Code"
+          className="flex items-center justify-center rounded-md transition-colors"
+          style={{
+            width: 36,
+            height: 36,
+            background: 'transparent',
+            color: 'var(--text-secondary)',
+          }}
+        >
+          <Code2 className="w-5 h-5" />
+        </button>
+      </div>
+
+      {/* Main content area */}
+      <div className="flex-1 min-w-0 flex flex-col">
+        {/* Desktop app update banner */}
+        <DesktopUpdateBanner active={active} />
+
+        {/* Sub-tab bar */}
+        {showSubTabs && (
+          <div
+            className="flex items-center gap-0.5 px-2 py-1 shrink-0 overflow-x-auto"
+            style={{
+              borderBottom: '1px solid var(--border)',
+              background: 'var(--bg-secondary)',
+            }}
+          >
+            {activeMode === 'terminal' && (
+              <>
+                {/* Terminal session sub-tabs */}
+                {terminalInstances.map((inst) => {
+                  const isActive = !showLauncher && !showAllTerminals && !activeWebPageId && inst.id === activeTerminalId;
+                  return (
+                    <div
+                      key={inst.id}
+                      className="flex items-center gap-0.5 rounded-md shrink-0 group"
+                      style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+                    >
+                      <button
+                        onClick={() => {
+                          setActiveTerminalId(inst.id);
+                          setActiveWebPageId(null);
+                          setShowLauncher(false);
+                          setShowAllTerminals(false);
+                        }}
+                        className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
+                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                      >
+                        {inst.label.startsWith('Terminal') ? (
+                          <TerminalSquare className="w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />
+                        ) : inst.label.startsWith('Agent') ? (
+                          <Bot className="w-3 h-3 shrink-0" style={{ color: '#ef4444' }} />
+                        ) : (
+                          <Zap className="w-3 h-3 shrink-0" style={{ color: '#60a5fa' }} />
+                        )}
+                        <span className="truncate">{inst.label}</span>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeTerminal(inst.id);
+                        }}
+                        className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
+                        style={{ color: 'var(--text-secondary)' }}
+                        title="Kill session"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+
+                {/* All Terminals grid view button — shown when 2+ terminals */}
+                {terminalInstances.length >= 2 && (
+                  <button
+                    onClick={() => {
+                      setShowAllTerminals(!showAllTerminals);
+                      setShowLauncher(false);
+                      setActiveWebPageId(null);
+                    }}
+                    className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
+                    title="View all terminals"
+                    style={{
+                      height: 28,
+                      color: showAllTerminals ? 'var(--accent)' : 'var(--text-secondary)',
+                      background: showAllTerminals ? 'var(--bg-tertiary)' : 'transparent',
+                    }}
+                  >
+                    <LayoutGrid className="w-3 h-3" />
+                    <span>All</span>
+                  </button>
+                )}
+
+                {/* New Session "+" button */}
+                <button
+                  onClick={() => { setShowLauncher(true); setShowAllTerminals(false); setActiveWebPageId(null); }}
+                  className="flex items-center justify-center rounded-md shrink-0 transition-colors"
+                  title="New Session"
+                  style={{
+                    width: 28,
+                    height: 28,
+                    color: showLauncher ? 'var(--accent)' : 'var(--text-secondary)',
+                    background: showLauncher ? 'var(--bg-tertiary)' : 'transparent',
+                  }}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+
+                {/* Adopt external session button — on-demand scan */}
+                <div ref={adoptMenuRef}>
+                  <button
+                    onClick={async () => {
+                      if (showAdoptMenu) {
+                        setShowAdoptMenu(false);
+                      } else {
+                        await refetchDiscoverable();
+                        setShowAdoptMenu(true);
+                      }
+                    }}
+                    className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
+                    title="Scan for external hivemind sessions to adopt"
+                    style={{
+                      height: 28,
+                      color: showAdoptMenu ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)',
+                      background: showAdoptMenu ? 'var(--bg-tertiary)' : 'transparent',
+                    }}
+                  >
+                    <Download className="w-3.5 h-3.5" />
+                  </button>
+
+                  {showAdoptMenu && createPortal(
+                    <div
+                      ref={adoptDropdownRef}
+                      className="fixed rounded-lg shadow-lg border z-[9999] min-w-[280px] max-w-[400px] py-1"
+                      style={{
+                        background: 'var(--bg-primary)',
+                        borderColor: 'var(--border)',
+                        top: (adoptMenuRef.current?.getBoundingClientRect().bottom ?? 0) + 4,
+                        left: adoptMenuRef.current?.getBoundingClientRect().left ?? 0,
+                      }}
+                    >
+                      <div
+                        className="px-3 py-1.5 text-xs font-medium"
+                        style={{ color: 'var(--text-secondary)' }}
+                      >
+                        External Hivemind Sessions
+                      </div>
+                      {discoverableSessions.length === 0 ? (
+                        <div
+                          className="px-3 py-2 text-xs"
+                          style={{ color: 'var(--text-secondary)' }}
+                        >
+                          No external sessions found
+                        </div>
+                      ) : (
+                        discoverableSessions.map((s) => (
+                          <button
+                            key={s.socketPath}
+                            onClick={() => handleAdoptSession(s.socketPath)}
+                            className="w-full text-left px-3 py-2 text-xs hover:bg-[var(--bg-tertiary)] transition-colors"
+                            style={{ color: 'var(--text-primary)' }}
+                          >
+                            <div className="truncate font-medium">{s.task.slice(0, 80)}</div>
+                            <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                              {s.startedAt ? new Date(s.startedAt).toLocaleTimeString() : 'unknown time'}
+                            </div>
+                          </button>
+                        ))
+                      )}
+                    </div>,
+                    document.body
+                  )}
+                </div>
+
+                {/* Web page tabs — shown alongside terminal tabs */}
+                {webPageInstances.length > 0 && (
+                  <div
+                    className="mx-1 self-stretch"
+                    style={{ width: 1, background: 'var(--border)' }}
+                  />
+                )}
+                {webPageInstances.map((inst) => {
+                  const isActive = !showLauncher && !showAllTerminals && activeWebPageId === inst.id && !activeTerminalId;
+                  return (
+                    <div
+                      key={inst.id}
+                      className="flex items-center gap-0.5 rounded-md shrink-0 group"
+                      style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+                    >
+                      <button
+                        onClick={() => {
+                          setActiveWebPageId(inst.id);
+                          setActiveTerminalId(null);
+                          setShowLauncher(false);
+                          setShowAllTerminals(false);
+                        }}
+                        className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
+                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                      >
+                        <Globe className="w-3 h-3 shrink-0" style={{ color: 'var(--accent)' }} />
+                        <span className="truncate max-w-[120px]">{inst.label}</span>
+                      </button>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          closeWebPage(inst.id);
+                        }}
+                        className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
+                        style={{ color: 'var(--text-secondary)' }}
+                        title="Close web page"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  );
+                })}
+              </>
+            )}
+
+            {activeMode === 'explorer' && (
+              <>
+                {explorerInstances.map((inst) => {
+                  const isActive = inst.id === activeExplorerId;
+                  const canClose = explorerInstances.length > 1;
+                  return (
+                    <div
+                      key={inst.id}
+                      className="flex items-center gap-0.5 rounded-md shrink-0 group"
+                      style={{ background: isActive ? 'var(--bg-tertiary)' : 'transparent' }}
+                    >
+                      <button
+                        onClick={() => setActiveExplorerId(inst.id)}
+                        className="flex items-center gap-1.5 pl-3 pr-1 py-1 text-xs font-medium transition-colors"
+                        style={{ color: isActive ? 'var(--text-primary)' : 'var(--text-secondary)' }}
+                      >
+                        <FolderTree className="w-3 h-3 shrink-0" style={{ color: 'var(--accent)' }} />
+                        <span className="truncate">{inst.label}</span>
+                      </button>
+                      {canClose && (
+                        <button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            closeExplorer(inst.id);
+                          }}
+                          className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
+                          style={{ color: 'var(--text-secondary)' }}
+                          title="Close"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
+                    </div>
+                  );
+                })}
+                <button
+                  onClick={addExplorer}
+                  className="flex items-center justify-center rounded-md shrink-0 transition-colors"
+                  title="New Explorer"
+                  style={{ width: 28, height: 28, color: 'var(--text-secondary)' }}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                </button>
+              </>
+            )}
+          </div>
+        )}
+
+        {/* Panel content */}
+        <div className="flex-1 min-h-0 relative">
+          {/* Terminal mode */}
+          {activeMode === 'terminal' && (
+            <>
+              {/* Show launcher when requested or no sessions */}
+              {(showLauncher || (terminalInstances.length === 0 && webPageInstances.length === 0)) && project && (
+                <div className="h-full absolute inset-0">
+                  <SessionLauncher
+                    project={project}
+                    onSessionCreated={handleSessionCreated}
+                    onWebPageCreated={handleWebPageCreated}
+                  />
+                </div>
+              )}
+
+              {/* Terminal instances — always mounted, layout switches via CSS
+                  between single-view (absolute positioned) and grid view.
+                  This avoids duplicate WebSocket connections and 5000-chunk replays. */}
+              <div
+                className={gridMode
+                  ? "h-full absolute inset-0 z-10 overflow-y-auto p-4"
+                  : "h-full absolute inset-0"
+                }
+                style={gridMode
+                  ? { background: 'var(--bg-primary)' }
+                  : { pointerEvents: 'none' }
+                }
+              >
+                {/* Backdrop inside grid wrapper so it shares the same stacking
+                    context as the expanded card (z-10 on wrapper creates a context) */}
+                {gridMode && expandedTerminalId && (
+                  <div
+                    className="fixed inset-0 z-40"
+                    style={{ background: 'rgba(0,0,0,0.7)' }}
+                    onClick={() => setExpandedTerminalId(null)}
+                  />
+                )}
+                <div className={gridMode ? "grid grid-cols-1 lg:grid-cols-2 2xl:grid-cols-3 gap-4" : "contents"}>
+                  {terminalInstances.map((term) => {
+                    const isSingleActive = !showLauncher && !showAllTerminals && !activeWebPageId && activeTerminalId === term.id;
+                    const isExpanded = gridMode && expandedTerminalId === term.id;
+                    const termVisible = gridMode
+                      ? (active && (expandedTerminalId ? isExpanded : true))
+                      : (isSingleActive && active);
+
+                    // Lazy-mount: in single-view, only mount terminals user has viewed
+                    if (termVisible || gridMode) mountedTerminals.current.add(term.id);
+                    const shouldMount = gridMode || mountedTerminals.current.has(term.id);
+
+                    return (
+                      <div
+                        key={term.id}
+                        className={gridMode
+                          ? `rounded-lg border flex flex-col overflow-hidden ${isExpanded ? 'fixed z-50 shadow-2xl' : ''}`
+                          : ""
+                        }
+                        style={gridMode
+                          ? (isExpanded ? {
+                              borderColor: 'var(--border)',
+                              background: '#0f1117',
+                              width: 'calc(100vw - 48px)',
+                              height: 'calc(100vh - 48px)',
+                              top: '24px',
+                              left: '24px',
+                            } : {
+                              borderColor: 'var(--border)',
+                              background: 'var(--bg-secondary)',
+                              height: '420px',
+                            })
+                          : {
+                              visibility: isSingleActive ? 'visible' : 'hidden',
+                              pointerEvents: isSingleActive ? 'auto' : 'none',
+                              zIndex: isSingleActive ? 1 : 0,
+                              position: 'absolute' as const,
+                              inset: 0,
+                              height: '100%',
+                            }
+                        }
+                        onClick={isExpanded ? (e) => e.stopPropagation() : undefined}
+                      >
+                        {/* Card header — always in DOM for stable React tree, hidden in single view */}
+                        <div
+                          className="items-center gap-2 px-3 py-2 border-b shrink-0 rounded-t-lg"
+                          style={{
+                            borderColor: 'var(--border)',
+                            background: 'var(--bg-tertiary)',
+                            display: gridMode ? 'flex' : 'none',
+                          }}
+                        >
+                          <Monitor className="w-3.5 h-3.5 shrink-0" style={{ color: 'var(--success)' }} />
+                          <span className={`font-medium shrink-0 ${isExpanded ? 'text-sm' : 'text-xs'}`} style={{ color: 'var(--text-primary)' }}>
+                            {term.label}
+                          </span>
+                          <span className={`truncate min-w-0 ml-auto ${isExpanded ? 'text-xs ml-2' : 'text-[10px]'}`} style={{ color: 'var(--text-secondary)' }}>
+                            {projectSessions.find((s) => s.id === term.id)?.task || 'Terminal'}
+                          </span>
+                          {isExpanded ? (
+                            <div className="flex items-center gap-2 ml-auto">
+                              <button
+                                onClick={() => {
+                                  setActiveTerminalId(term.id);
+                                  setShowAllTerminals(false);
+                                  setExpandedTerminalId(null);
+                                }}
+                                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors"
+                                style={{ background: 'var(--accent)', color: 'white' }}
+                                title="Focus this terminal"
+                              >
+                                <ExternalLink className="w-3 h-3" />
+                                <span>Focus</span>
+                              </button>
+                              <button
+                                onClick={() => setExpandedTerminalId(null)}
+                                className="flex items-center gap-1.5 px-2.5 py-1 rounded text-xs font-medium transition-colors"
+                                style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                                title="Minimize back to grid"
+                              >
+                                <Minimize2 className="w-3 h-3" />
+                                <span>Minimize</span>
+                              </button>
+                            </div>
+                          ) : (
+                            <>
+                              <button
+                                onClick={() => setExpandedTerminalId(term.id)}
+                                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors hover:opacity-100 opacity-70"
+                                style={{ background: 'var(--bg-secondary)', color: 'var(--text-secondary)', border: '1px solid var(--border)' }}
+                                title="Expand terminal"
+                              >
+                                <Maximize2 className="w-2.5 h-2.5" />
+                              </button>
+                              <button
+                                onClick={() => {
+                                  setActiveTerminalId(term.id);
+                                  setShowAllTerminals(false);
+                                }}
+                                className="flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium transition-colors hover:opacity-100 opacity-70"
+                                style={{ background: 'var(--accent)', color: 'white' }}
+                                title="Focus this terminal"
+                              >
+                                <ExternalLink className="w-2.5 h-2.5" />
+                              </button>
+                            </>
+                          )}
+                        </div>
+                        <div className={gridMode ? "flex-1 min-h-0" : "h-full"}>
+                          {shouldMount && (
+                            <Terminal
+                              sessionId={term.id}
+                              visible={termVisible}
+                              suspended={terminalsSuspended || (!gridMode && !termVisible)}
+                              passiveResize={gridMode && !isExpanded && projectSessions.find((s) => s.id === term.id)?.task === 'Terminal'}
+                              hideCursor={projectSessions.find((s) => s.id === term.id)?.task !== 'Terminal' && projectSessions.some((s) => s.id === term.id)}
+                              onReconnect={() => reconnectTerminal(term.id)}
+                              onPopOut={() => closeTerminalTab(term.id)}
+                            />
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            </>
+          )}
+
+          {/* Web page instances */}
+          {activeMode === 'terminal' && webPageInstances.map((wp) => {
+            const isActiveWP = activeWebPageId === wp.id && !showLauncher && !showAllTerminals;
+            return (
+              <div
+                key={wp.id}
+                className="h-full absolute inset-0"
+                style={{
+                  visibility: isActiveWP ? 'visible' : 'hidden',
+                  pointerEvents: isActiveWP ? 'auto' : 'none',
+                  zIndex: isActiveWP ? 2 : 0,
+                }}
+              >
+                <WebPageView
+                  url={wp.url}
+                  visible={isActiveWP && active}
+                  onUrlChange={(newUrl) => {
+                    setWebPageInstances((prev) =>
+                      prev.map((w) => (w.id === wp.id ? { ...w, url: newUrl } : w))
+                    );
+                  }}
+                />
+              </div>
+            );
+          })}
+
+          {/* Explorer instances */}
+          {explorerInstances.map((expl) => (
+            <div
+              key={expl.id}
+              className="h-full absolute inset-0"
+              style={{
+                display: activeMode === 'explorer' && activeExplorerId === expl.id ? 'block' : 'none',
+              }}
+            >
+              <FileExplorer rootPath={projectPath} instanceId={expl.id} refreshFilePath={gitSavedFile} onFileSaved={handleExplorerFileSaved} />
+            </div>
+          ))}
+
+          {/* Events panel */}
+          {/* Git panel */}
+          <div
+            className="h-full absolute inset-0"
+            style={{ display: activeMode === 'git' ? 'block' : 'none' }}
+          >
+            <GitPanel projectPath={projectPath} isVisible={activeMode === 'git'} onFileSaved={handleGitFileSaved} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
