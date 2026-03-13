@@ -425,8 +425,9 @@ case "$OS" in
 esac
 
 if [ -z "$DESKTOP_URL" ] && [ -n "$DESKTOP_FILE" ]; then
-  # Always use the CDN URL for large binary downloads (fast)
-  DESKTOP_URL="https://github.com/$GITHUB_REPO/releases/download/v${VERSION}/${DESKTOP_FILE}"
+  # Try CDN URL first (fast for public repos)
+  CDN_URL="https://github.com/$GITHUB_REPO/releases/download/v${VERSION}/${DESKTOP_FILE}"
+  DESKTOP_URL="$CDN_URL"
 fi
 
 # Check if the desktop binary actually exists
@@ -435,12 +436,30 @@ if [ "$DESKTOP_SUPPORTED" = true ] && [ -n "$DESKTOP_URL" ]; then
   if [[ "$DESKTOP_URL" == file://* ]]; then
     local_path="${DESKTOP_URL#file://}"
     [ -f "$local_path" ] && DESKTOP_AVAILABLE=true
-  elif [[ "$DESKTOP_URL" == https://api.github.com/* ]]; then
-    # API asset URL resolved from release info — it exists
+  elif curl -sfIL "${AUTH_HEADER[@]}" --max-time 5 "$DESKTOP_URL" >/dev/null 2>&1; then
     DESKTOP_AVAILABLE=true
   else
-    if curl -sfIL "${AUTH_HEADER[@]}" --max-time 5 "$DESKTOP_URL" >/dev/null 2>&1; then
-      DESKTOP_AVAILABLE=true
+    # CDN URL failed — try finding the asset via API (private repo or version mismatch)
+    if [ -n "$GITHUB_TOKEN" ]; then
+      if [ -z "${RELEASE_INFO:-}" ]; then
+        RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v${VERSION}" 2>/dev/null || echo "")
+      fi
+    fi
+    if [ -n "$GITHUB_TOKEN" ] && [ -n "${RELEASE_INFO:-}" ]; then
+      # Search for any .deb (Linux) or .dmg (macOS) asset in the release
+      case "$OS" in
+        Linux*)  ASSET_PATTERN=".deb" ;;
+        Darwin*) ASSET_PATTERN=".dmg" ;;
+      esac
+      API_URL=$(echo "$RELEASE_INFO" | node -e "
+        let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+          try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>x.name.endsWith('${ASSET_PATTERN}'));
+          if(a)console.log(a.url);else process.exit(1)}catch{process.exit(1)}
+        })" 2>/dev/null || echo "")
+      if [ -n "$API_URL" ]; then
+        DESKTOP_URL="$API_URL"
+        DESKTOP_AVAILABLE=true
+      fi
     fi
   fi
 fi
