@@ -250,15 +250,16 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       for (const b of backed) output.push(`  → ${b}`);
     }
 
+    // Run each step sequentially to avoid parallel npx downloads OOM on low-memory machines
     try {
-      const result = await execFileAsync(npx, ['ruflo@latest', 'init', '--force', '--start-all'], opts);
+      const result = await execFileAsync(npx, ['ruflo@latest', 'init', '--force', '--minimal'], opts);
       output.push('[ruflo init] ' + (result.stdout || 'done'));
     } catch (err: any) {
       output.push('[error] ' + (err.message || String(err)));
       return reply.status(500).send({ ok: false, output: output.join('\n'), error: err.message });
     }
 
-    // Initialize hive-mind (ruflo init doesn't do this automatically)
+    // Initialize hive-mind (sequential — ruflo already cached from init above)
     try {
       const hmResult = await execFileAsync(npx, ['ruflo@latest', 'hive-mind', 'init'], opts);
       output.push('[hive-mind init] ' + (hmResult.stdout || 'done'));
