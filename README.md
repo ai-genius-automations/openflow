@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">⚡ OpenFlow</h1>
+  <h1 align="center"><img src="https://lucide.dev/api/icons/zap?color=%236366f1" width="32" height="32"> OpenFlow</h1>
   <p align="center">
     <strong>AI Coding Session Orchestration Dashboard</strong>
   </p>
