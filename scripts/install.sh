@@ -2,9 +2,13 @@
 # OpenFlow Installer
 # Downloads a pre-built release, extracts it, and starts the server.
 #
-# Prerequisites (install these first):
+# Prerequisites:
 #   - Node.js 20+    https://nodejs.org
 #   - Claude Code     npm install -g @anthropic-ai/claude-code
+#
+# IMPORTANT: You must run `claude` at least once and accept the terms before
+# installing OpenFlow. Sessions require non-interactive mode, so you must also
+# run: claude --dangerously-skip-permissions
 #
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/ai-genius-automations/openflow/main/scripts/install.sh | bash
@@ -136,6 +140,56 @@ if ! command -v claude &>/dev/null; then
     exit 1
   fi
   log_ok "Claude Code $(claude --version 2>/dev/null || echo 'installed')"
+fi
+
+# Check if Claude Code has been run with --dangerously-skip-permissions
+# This is required for OpenFlow to run non-interactive agent sessions.
+# The flag creates a config entry that persists — only needs to be run once.
+CLAUDE_CONFIG_DIR="${HOME}/.claude"
+if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
+  CLAUDE_CONFIG_DIR="$TARGET_HOME/.claude"
+fi
+
+CLAUDE_INITIALIZED=false
+if [ -d "$CLAUDE_CONFIG_DIR" ]; then
+  # Check if settings or any config file indicates permissions were accepted
+  if [ -f "$CLAUDE_CONFIG_DIR/settings.json" ] || [ -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
+    CLAUDE_INITIALIZED=true
+  fi
+fi
+
+if [ "$CLAUDE_INITIALIZED" = false ]; then
+  log_warn "Claude Code has not been initialized yet."
+  echo ""
+  echo "  OpenFlow requires Claude Code to be set up with non-interactive permissions."
+  echo "  You need to run these commands (as your user, not root):"
+  echo ""
+  echo "    1. claude                              # Accept terms & sign in"
+  echo "    2. claude --dangerously-skip-permissions  # Enable non-interactive mode"
+  echo ""
+  if [ -t 0 ] && [ -t 1 ]; then
+    echo -n "  Have you already done this? [y/N]: "
+    read -r answer < /dev/tty 2>/dev/null || answer="n"
+    case "$answer" in
+      [yY]|[yY][eE][sS])
+        log_info "Continuing with install..."
+        ;;
+      *)
+        echo ""
+        log_info "Please run the commands above first, then re-run this installer."
+        echo ""
+        echo "  Quick setup:"
+        echo "    claude                                 # Accept terms & sign in"
+        echo "    claude --dangerously-skip-permissions   # Enable non-interactive mode"
+        echo "    # Then re-run this installer"
+        echo ""
+        exit 1
+        ;;
+    esac
+  else
+    log_error "Run 'claude' and 'claude --dangerously-skip-permissions' first, then re-run this installer."
+    exit 1
+  fi
 fi
 
 # Install runtime deps if missing (tmux, dtach, curl, build tools)
