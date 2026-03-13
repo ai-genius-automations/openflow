@@ -425,18 +425,31 @@ case "$OS" in
 esac
 
 if [ -z "$DESKTOP_URL" ] && [ -n "$DESKTOP_FILE" ]; then
-  DESKTOP_URL="https://github.com/$GITHUB_REPO/releases/download/v${VERSION}/${DESKTOP_FILE}"
+  if [ -n "$GITHUB_TOKEN" ]; then
+    # Private repo — look up asset API URL from release info
+    if [ -z "${RELEASE_INFO:-}" ]; then
+      RELEASE_INFO=$(curl -sf "${AUTH_HEADER[@]}" "https://api.github.com/repos/$GITHUB_REPO/releases/tags/v${VERSION}" 2>/dev/null || echo "")
+    fi
+    DESKTOP_URL=$(echo "$RELEASE_INFO" | node -e "
+      let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{
+        try{const r=JSON.parse(d);const a=(r.assets||[]).find(x=>x.name==='$DESKTOP_FILE');
+        if(a)console.log(a.url);else process.exit(1)}catch{process.exit(1)}
+      })" 2>/dev/null || echo "")
+  else
+    DESKTOP_URL="https://github.com/$GITHUB_REPO/releases/download/v${VERSION}/${DESKTOP_FILE}"
+  fi
 fi
 
-# Check if the desktop binary actually exists (HEAD request, no download)
+# Check if the desktop binary actually exists
 DESKTOP_AVAILABLE=false
 if [ "$DESKTOP_SUPPORTED" = true ] && [ -n "$DESKTOP_URL" ]; then
   if [[ "$DESKTOP_URL" == file://* ]]; then
-    # Local file — check if it exists
     local_path="${DESKTOP_URL#file://}"
     [ -f "$local_path" ] && DESKTOP_AVAILABLE=true
+  elif [[ "$DESKTOP_URL" == https://api.github.com/* ]]; then
+    # API asset URL resolved from release info — it exists
+    DESKTOP_AVAILABLE=true
   else
-    # Remote URL — check with HEAD request
     if curl -sfIL "${AUTH_HEADER[@]}" --max-time 5 "$DESKTOP_URL" >/dev/null 2>&1; then
       DESKTOP_AVAILABLE=true
     fi
