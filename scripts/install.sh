@@ -29,25 +29,9 @@ log_step()  { echo -e "\n${BOLD}[$1/$TOTAL_STEPS] $2${NC}"; }
 
 TOTAL_STEPS=7
 
-# --- Step 1: Check for Claude Code (user must install) ------------------------
+# --- Step 1: Install system prerequisites ------------------------------------
 
-log_step 1 "Checking for Claude Code..."
-
-if ! command -v claude &>/dev/null; then
-  log_error "Claude Code is required but not installed."
-  echo ""
-  echo "Install Claude Code first:"
-  echo "  npm install -g @anthropic-ai/claude-code"
-  echo ""
-  echo "Then re-run this installer."
-  exit 1
-fi
-
-log_ok "Claude Code found: $(claude --version 2>/dev/null || echo 'installed')"
-
-# --- Step 2: Install system prerequisites ------------------------------------
-
-log_step 2 "Installing system prerequisites..."
+log_step 1 "Installing system prerequisites..."
 
 OS="$(uname -s)"
 
@@ -75,7 +59,6 @@ install_linux_prereqs() {
 
   if [ "$NEED_NODE" = true ]; then
     log_info "Installing Node.js 22 via NodeSource..."
-    # Install NodeSource GPG key and repo
     sudo apt-get update -qq
     sudo apt-get install -y -qq ca-certificates curl gnupg
     sudo mkdir -p /etc/apt/keyrings
@@ -95,7 +78,6 @@ install_linux_prereqs() {
 }
 
 install_macos_prereqs() {
-  # Check for Homebrew
   if ! command -v brew &>/dev/null; then
     log_error "Homebrew is required on macOS. Install it from https://brew.sh"
     exit 1
@@ -107,7 +89,6 @@ install_macos_prereqs() {
   command -v tmux &>/dev/null  || NEEDED+=(tmux)
   command -v dtach &>/dev/null || NEEDED+=(dtach)
 
-  # Check Node.js (need 20+)
   if ! command -v node &>/dev/null; then
     NEEDED+=(node)
   else
@@ -150,6 +131,22 @@ if [ "$NODE_MAJOR" -lt 20 ]; then
 fi
 
 log_ok "All prerequisites met (Node $(node -v), tmux $(tmux -V))"
+
+# --- Step 2: Check for Claude Code (user must install) ------------------------
+
+log_step 2 "Checking for Claude Code..."
+
+if ! command -v claude &>/dev/null; then
+  log_error "Claude Code is required but not installed."
+  echo ""
+  echo "Install Claude Code first:"
+  echo "  npm install -g @anthropic-ai/claude-code"
+  echo ""
+  echo "Then re-run this installer."
+  exit 1
+fi
+
+log_ok "Claude Code found: $(claude --version 2>/dev/null || echo 'installed')"
 
 # Install ruflo + claude-flow globally so per-project init doesn't re-download
 if ! command -v ruflo &>/dev/null; then
