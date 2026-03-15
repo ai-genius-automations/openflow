@@ -189,6 +189,8 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
 
   // Track sessions the user explicitly closed so the sync effect doesn't re-add them
   const closedSessionIds = useRef(new Set<string>());
+  // Counter to force re-render when closedSessionIds changes (refs don't trigger re-renders)
+  const [closedIdsVersion, setClosedIdsVersion] = useState(0);
 
   // Sync terminal instances with server sessions (auto-detect running sessions)
   const syncedRef = useRef(false);
@@ -428,15 +430,17 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
 
   // Compute hidden sessions (user hid the tab but process is still running)
   const hiddenSessions = useMemo(() => {
+    void closedIdsVersion; // depend on version counter so this recomputes when sessions are hidden/unhidden
     if (closedSessionIds.current.size === 0) return [];
     return projectSessions.filter((s) =>
       closedSessionIds.current.has(s.id) &&
       (s.status === 'running' || s.status === 'detached')
     );
-  }, [projectSessions]);
+  }, [projectSessions, closedIdsVersion]);
 
   function unhideSession(id: string) {
     closedSessionIds.current.delete(id);
+    setClosedIdsVersion((v) => v + 1);
     // Trigger re-sync by invalidating sessions query
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
     setShowAdoptMenu(false);
@@ -511,6 +515,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
 
   function closeTerminalTab(id: string) {
     closedSessionIds.current.add(id);
+    setClosedIdsVersion((v) => v + 1);
     setTerminalInstances((prev) => prev.filter((t) => t.id !== id));
     if (activeTerminalId === id) {
       const remaining = terminalInstances.filter((t) => t.id !== id);
