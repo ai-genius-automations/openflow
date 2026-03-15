@@ -453,7 +453,50 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
   function unhideSession(id: string) {
     closedSessionIds.current.delete(id);
     setClosedIdsVersion((v) => v + 1);
-    // Trigger re-sync by invalidating sessions query
+
+    // Find the session data to determine its type and re-add the tab
+    const allSessions = sessionsData?.sessions || [];
+    const session = allSessions.find((s: any) => s.id === id);
+    if (session) {
+      setTerminalInstances((prev) => {
+        if (prev.some((t) => t.id === id)) return prev;
+        const isTerminal = session.task === 'Terminal';
+        const isAgent = session.task?.startsWith('Agent (');
+        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+        const count = prev.filter((t) => t.label.startsWith(prefix)).length + 1;
+        return [...prev, { id, label: `${prefix} ${count}` }];
+      });
+      setActiveTerminalId(id);
+      setShowLauncher(false);
+      setShowAllTerminals(false);
+    }
+
+    queryClient.invalidateQueries({ queryKey: ['sessions'] });
+    setShowAdoptMenu(false);
+  }
+
+  function unhideAll() {
+    const ids = [...closedSessionIds.current];
+    closedSessionIds.current.clear();
+    setClosedIdsVersion((v) => v + 1);
+
+    const allSessions = sessionsData?.sessions || [];
+    setTerminalInstances((prev) => {
+      let updated = [...prev];
+      for (const id of ids) {
+        if (updated.some((t) => t.id === id)) continue;
+        const session = allSessions.find((s: any) => s.id === id && (s.status === 'running' || s.status === 'detached'));
+        if (!session) continue;
+        const isTerminal = session.task === 'Terminal';
+        const isAgent = session.task?.startsWith('Agent (');
+        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+        const count = updated.filter((t) => t.label.startsWith(prefix)).length + 1;
+        updated.push({ id, label: `${prefix} ${count}` });
+      }
+      return updated;
+    });
+
+    setShowLauncher(false);
     queryClient.invalidateQueries({ queryKey: ['sessions'] });
     setShowAdoptMenu(false);
   }
@@ -833,11 +876,22 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                       {/* Hidden sessions (tabs the user hid but processes still running) */}
                       {hiddenSessions.length > 0 && (
                         <>
-                          <div
-                            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
-                            style={{ color: 'var(--text-secondary)' }}
-                          >
-                            Hidden
+                          <div className="flex items-center justify-between px-3 py-1.5">
+                            <span
+                              className="text-[10px] font-semibold uppercase tracking-wider"
+                              style={{ color: 'var(--text-secondary)' }}
+                            >
+                              Hidden
+                            </span>
+                            {hiddenSessions.length > 1 && (
+                              <button
+                                onClick={unhideAll}
+                                className="text-[10px] font-medium px-1.5 py-0.5 rounded hover:opacity-80 transition-opacity"
+                                style={{ color: 'var(--accent)', background: 'var(--bg-tertiary)' }}
+                              >
+                                Restore All
+                              </button>
+                            )}
                           </div>
                           {hiddenSessions.map((s: any) => {
                             const isTerminal = s.task === 'Terminal';
