@@ -128,7 +128,7 @@ if [ "$NEED_NODE" = true ]; then
       ;;
     Darwin*)
       if command -v brew &>/dev/null; then
-        brew install node 2>&1 | tail -1
+        brew install node 2>&1 || true
       else
         log_error "Cannot auto-install Node.js without Homebrew. Install from https://nodejs.org"
         exit 1
@@ -150,7 +150,11 @@ fi
 if ! command -v claude &>/dev/null; then
   prompt_install "Claude Code" "Install with: npm install -g @anthropic-ai/claude-code"
   log_info "Installing Claude Code..."
-  $SUDO npm install -g @anthropic-ai/claude-code 2>&1 | tail -1
+  if [ "$OS" = "Darwin" ]; then
+    npm install -g @anthropic-ai/claude-code 2>&1 || true
+  else
+    $SUDO npm install -g @anthropic-ai/claude-code 2>&1 || true
+  fi
   if ! command -v claude &>/dev/null; then
     log_error "Claude Code installation failed. Install manually: npm install -g @anthropic-ai/claude-code"
     exit 1
@@ -229,12 +233,14 @@ case "$OS" in
   Darwin*)
     if [ ${#NEEDED[@]} -gt 0 ] && command -v brew &>/dev/null; then
       log_info "Installing: ${NEEDED[*]}..."
-      brew install "${NEEDED[@]}" 2>&1 | tail -1
+      brew install "${NEEDED[@]}" 2>&1 || true
     fi
     ;;
 esac
 
-log_ok "Prerequisites met (Node $(node -v), Claude Code $(claude --version 2>/dev/null || echo 'ok'))"
+NODE_VER="$(node -v 2>/dev/null || echo 'not found')"
+CLAUDE_VER="$(claude --version 2>/dev/null || echo 'ok')"
+log_ok "Prerequisites met (Node ${NODE_VER}, Claude Code ${CLAUDE_VER})"
 
 # --- Step 2: Download release ------------------------------------------------
 
