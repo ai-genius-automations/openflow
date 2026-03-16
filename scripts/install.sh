@@ -445,6 +445,12 @@ if command -v dpkg &>/dev/null && dpkg -l open-flow &>/dev/null 2>&1; then
   $SUDO dpkg -r open-flow 2>&1 || true
 fi
 
+# Remove old OpenFlow Electron desktop app if installed
+if command -v dpkg &>/dev/null && dpkg -l openflow-desktop &>/dev/null 2>&1; then
+  log_info "Removing old desktop app (openflow-desktop)..."
+  $SUDO dpkg -r openflow-desktop 2>&1 || true
+fi
+
 # Start (as target user if we're root)
 if [ "$(id -u)" -eq 0 ] && [ "$TARGET_USER" != "root" ]; then
   su - "$TARGET_USER" -c "PATH=\"$LINK_DIR:\$PATH\" hivecommand start"
