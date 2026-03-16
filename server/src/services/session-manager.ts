@@ -1258,12 +1258,26 @@ export async function killSession(sessionId: string): Promise<boolean> {
     } catch { /* ignore */ }
   }
 
-  // 2. Delete pty_output immediately — no point keeping replay data for a killed session
+  // 2. Run SONA session-end hook before killing (consolidates learning data)
+  try {
+    const sess = getDb().prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined;
+    if (sess?.project_id) {
+      const proj = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(sess.project_id) as { path: string } | undefined;
+      const hookHandler = proj?.path ? join(proj.path, '.claude', 'helpers', 'hook-handler.cjs') : null;
+      if (hookHandler && existsSync(hookHandler)) {
+        await execFileAsync('node', [hookHandler, 'session-end'], {
+          cwd: proj!.path, timeout: 5000,
+        }).catch(() => { /* non-fatal — don't block kill */ });
+      }
+    }
+  } catch { /* ignore */ }
+
+  // 3. Delete pty_output immediately — no point keeping replay data for a killed session
   try {
     getDb().prepare('DELETE FROM pty_output WHERE session_id = ?').run(sessionId);
   } catch { /* ignore */ }
 
-  // 3. Tell the worker to kill everything (non-blocking from our perspective)
+  // 4. Tell the worker to kill everything (non-blocking from our perspective)
   if (active) {
     try {
       active.worker.send({ type: 'kill' });
@@ -1280,7 +1294,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     removeTracker(sessionId);
   }
 
-  // 4. Kill adopted external session processes (fire and forget)
+  // 5. Kill adopted external session processes (fire and forget)
   if (active?.externalSocket) {
     const sock = active.externalSocket;
     adoptedSockets.delete(sock);
@@ -1297,7 +1311,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }).catch(() => { /* fuser failed */ });
   }
 
-  // 5. Kill orphaned ruflo daemon for this session's project
+  // 6. Kill orphaned ruflo daemon for this session's project
   try {
     const sess = getDb().prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined;
     if (sess?.project_id) {
@@ -1308,7 +1322,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }
   } catch { /* ignore */ }
 
-  // 6. Fallback: kill by DB PID if no active session (e.g. server restarted)
+  // 7. Fallback: kill by DB PID if no active session (e.g. server restarted)
   if (!active) {
     try {
       const session = getDb().prepare('SELECT pid FROM sessions WHERE id = ?').get(sessionId) as { pid: number | null } | undefined;
@@ -1319,7 +1333,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     } catch { /* ignore */ }
   }
 
-  // 7. Update DB immediately
+  // 8. Update DB immediately
   const db = getDb();
   const result = db.prepare(`
     UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
