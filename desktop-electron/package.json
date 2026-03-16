@@ -62,5 +62,8 @@
     "electron-builder": "^26.0.0",
     "esbuild": "^0.25.0",
     "typescript": "^5.7.0"
+  },
+  "optionalDependencies": {
+    "dmg-license": "^1.0.11"
   }
 }
