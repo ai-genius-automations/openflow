@@ -1,5 +1,6 @@
 <p align="center">
-  <h1 align="center">⚡ HiveCommand</h1>
+  <img src="dashboard/public/hivecommand-logo.png" alt="HiveCommand" width="128" height="128">
+  <h1 align="center">HiveCommand</h1>
   <p align="center">
     <strong>AI Coding Session Orchestration Dashboard</strong>
   </p>

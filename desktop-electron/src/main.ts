@@ -1,4 +1,4 @@
-import { app, BrowserWindow, Menu, shell, ipcMain, session } from 'electron';
+import { app, BrowserWindow, Menu, shell, ipcMain, session, globalShortcut } from 'electron';
 import * as path from 'path';
 import { resolveCliPath, isServerReachable, startServer, waitForServer } from './server-manager';
 import { createTray } from './tray';
@@ -59,6 +59,13 @@ function createWindow() {
   mainWindow.webContents.on('unresponsive', () => {
     console.warn('[HiveCommand] Window became unresponsive, reloading...');
     setTimeout(() => mainWindow?.webContents.reload(), 1000);
+  });
+
+  // DevTools keyboard shortcut (menu bar is hidden)
+  mainWindow.webContents.on('before-input-event', (_event, input) => {
+    if (input.key === 'F12' || (input.control && input.shift && input.key === 'I')) {
+      mainWindow?.webContents.toggleDevTools();
+    }
   });
 
   // Close-to-tray: hide window instead of quitting
