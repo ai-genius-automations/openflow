@@ -2,8 +2,9 @@ import { FastifyPluginAsync } from 'fastify';
 import { getDb } from '../db/index.js';
 import { nanoid } from 'nanoid';
 import { readdir, mkdir, readFile, writeFile } from 'fs/promises';
-import { join, resolve, basename } from 'path';
+import { join, resolve, basename, dirname } from 'path';
 import { homedir } from 'os';
+import { fileURLToPath } from 'url';
 import { execFile, execFileSync } from 'child_process';
 import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync } from 'fs';
 import { promisify } from 'util';
@@ -56,7 +57,7 @@ const HAS_RUFLO_RUN = existsSync(RUFLO_RUN);
 /** SONA patch script — patches ruflo's hook-handler.cjs with trajectory learning.
  *  Ships in this repo (scripts/patch-sona.sh) so all devs get it.
  *  Version-gated: auto-disables when ruflo ships native SONA support. */
-const SONA_PATCH = join(__dirname, '..', '..', '..', 'scripts', 'patch-sona.sh');
+const SONA_PATCH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'patch-sona.sh');
 const HAS_SONA_PATCH = existsSync(SONA_PATCH);
 
 /**
