@@ -244,9 +244,20 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         e.preventDefault();
         return false;
       }
-      // Let Ctrl+Shift+V pass through to trigger browser paste event
-      if (e.ctrlKey && e.shiftKey && e.key === 'V') {
-        return false; // Don't let xterm handle it
+      // Ctrl+Shift+V: read clipboard explicitly and send as input.
+      // Can't rely on browser firing a paste event — synthetic keystrokes
+      // (e.g. from text expanders like espanso via xdotool) don't trigger it.
+      if (e.ctrlKey && e.shiftKey && e.key === 'V' && e.type === 'keydown') {
+        navigator.clipboard.readText().then(text => {
+          if (text) {
+            const w = wsRef.current;
+            if (w && w.readyState === WebSocket.OPEN) {
+              w.send(JSON.stringify({ type: 'input', data: text }));
+            }
+          }
+        }).catch(() => {});
+        e.preventDefault();
+        return false;
       }
       return true;
     });

@@ -61,10 +61,32 @@ function createWindow() {
     setTimeout(() => mainWindow?.webContents.reload(), 1000);
   });
 
-  // DevTools keyboard shortcut (menu bar is hidden)
-  mainWindow.webContents.on('before-input-event', (_event, input) => {
+  // Keyboard shortcuts (menu bar is hidden)
+  mainWindow.webContents.on('before-input-event', (event, input) => {
     if (input.key === 'F12' || (input.control && input.shift && input.key === 'I')) {
       mainWindow?.webContents.toggleDevTools();
+    }
+    // F5: refresh, Ctrl+Shift+F5: hard refresh (bypass cache)
+    if (input.key === 'F5' && input.type === 'keyDown') {
+      event.preventDefault();
+      if (input.control && input.shift) {
+        mainWindow?.webContents.reloadIgnoringCache();
+      } else {
+        mainWindow?.webContents.reload();
+      }
+    }
+    // Handle paste at the Electron level — synthetic keystrokes from text
+    // expanders (espanso/xdotool/TextExpander) don't trigger browser paste events,
+    // and navigator.clipboard.readText() rejects without a real user gesture.
+    // webContents.paste() fires a proper ClipboardEvent on the focused element.
+    // Linux: Ctrl+Shift+V, macOS: Cmd+V
+    const isPaste = input.type === 'keyDown' && input.key.toLowerCase() === 'v' && (
+      (input.control && input.shift) ||  // Linux: Ctrl+Shift+V
+      (input.meta && !input.shift)       // macOS: Cmd+V
+    );
+    if (isPaste) {
+      event.preventDefault();
+      mainWindow?.webContents.paste();
     }
   });
 

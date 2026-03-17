@@ -694,6 +694,24 @@ install_desktop_app() {
       $SUDO dpkg -i "$TMPDESKTOP" 2>&1 || $SUDO apt-get install -f -y -qq 2>&1
       rm -f "$TMPDESKTOP"
       log_ok "Desktop app installed (launch from app menu or run: hivecommand-desktop)"
+
+      # Configure espanso text expander if installed — xterm.js in Electron needs
+      # clipboard backend instead of inject mode for text expansion to work
+      ESPANSO_CONFIG_DIR="${TARGET_HOME}/.config/espanso/config"
+      if [ -d "$ESPANSO_CONFIG_DIR" ] && [ ! -f "$ESPANSO_CONFIG_DIR/hivecommand.yml" ]; then
+        cat > "$ESPANSO_CONFIG_DIR/hivecommand.yml" << 'ESPANSO_EOF'
+# HiveCommand: force clipboard backend for text expansion in xterm.js/Electron
+filter_class: hivecommand-desktop
+backend: Clipboard
+fast_inject: false
+paste_shortcut: CTRL+SHIFT+V
+apply_patch: false
+ESPANSO_EOF
+        if [ -n "${SUDO_USER:-}" ]; then
+          chown "$TARGET_USER:$TARGET_USER" "$ESPANSO_CONFIG_DIR/hivecommand.yml"
+        fi
+        log_ok "Configured espanso text expander for HiveCommand"
+      fi
       ;;
     Darwin*)
       log_info "Mounting DMG..."
