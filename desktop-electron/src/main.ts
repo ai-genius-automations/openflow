@@ -1,5 +1,6 @@
 import { app, BrowserWindow, Menu, shell, ipcMain, session, globalShortcut } from 'electron';
 import * as path from 'path';
+import * as http from 'http';
 import { resolveCliPath, isServerReachable, startServer, waitForServer } from './server-manager';
 import { createTray } from './tray';
 import { registerSpeechHandlers } from './speech';
@@ -185,30 +186,26 @@ app.whenReady().then(async () => {
   });
   webpageSession.setPermissionCheckHandler(() => true);
 
-  // Strip "Electron" from webview session User-Agent so Google doesn't block OAuth.
-  // Also strip the app name (hivecommand-desktop) to look like a normal browser.
+  // Strip "Electron" and app name from webview session User-Agent.
   const defaultUA = webpageSession.getUserAgent();
   const cleanUA = defaultUA
     .replace(/\s*Electron\/\S+/g, '')
     .replace(/\s*hivecommand-desktop\/\S+/g, '');
   webpageSession.setUserAgent(cleanUA);
 
-  // Fix: Electron webview ERR_FAILED on OAuth callback URLs with large hash fragments.
+  // OAuth flow: Google blocks ALL embedded browsers (Electron BrowserWindow, webview,
+  // etc.) regardless of UA/Client-Hints/CDP spoofing. The only reliable approach is
+  // shell.openExternal() to open OAuth in the user's real system browser.
   //
-  // Root cause: Electron's webview GUEST_VIEW_MANAGER can't handle URLs with large
-  // hash fragments (>1KB). Supabase implicit OAuth returns tokens via hash fragment.
-  //
-  // Solution: Intercept OAuth navigation in the webview and open it in a popup
-  // BrowserWindow instead. BrowserWindow uses a regular renderer (no GUEST_VIEW_MANAGER)
-  // so it can handle the full callback URL with hash. Both share the same session
-  // partition ('persist:webpages') so the session cookie set by the SPA's backend
-  // is available to the webview after the popup completes the OAuth flow.
+  // Token bridge: Start a temporary localhost HTTP server. Rewrite redirect_to to point
+  // to it. After OAuth completes, Supabase redirects to our server with tokens in the
+  // hash fragment. Our server serves a small page that reads the hash via JS and POSTs
+  // the tokens back. We then inject the tokens into the webview's Supabase session.
 
-  // Webview setup: intercept OAuth navigations, open in popup BrowserWindow
+  // Webview setup: intercept OAuth navigations, open in system browser
   app.on('web-contents-created', (_event, contents) => {
     if (contents.getType() === 'webview') {
       // Set dark background to prevent white flash during SPA page transitions.
-      // This is the color Chromium shows between page paints.
       contents.setBackgroundThrottling(false);
       contents.on('dom-ready', () => {
         try {
@@ -222,81 +219,147 @@ app.whenReady().then(async () => {
         return { action: 'deny' };
       });
 
-      // Intercept OAuth navigation: open in a popup BrowserWindow instead of webview
+      // Intercept OAuth navigation: open in system browser with token bridge
       contents.on('will-navigate', (event, url) => {
-        // Detect Supabase OAuth authorize URLs
         if (url.includes('/auth/v1/authorize')) {
           event.preventDefault();
-          console.log('[WebView Auth] Intercepted OAuth navigation, opening in popup window...');
+          console.log('[WebView Auth] Intercepted OAuth, opening in system browser...');
 
-          // Track the origin of the app that initiated OAuth
           let appOrigin = '';
-          let authUrl = url;
+          let originalRedirectTo = '';
           try {
             const parsed = new URL(url);
             const redirectTo = parsed.searchParams.get('redirect_to') || '';
             if (redirectTo) {
-              const redirectParsed = new URL(redirectTo);
-              appOrigin = redirectParsed.origin;
-            }
-            // Force Google account picker by adding prompt=select_account
-            if (!parsed.searchParams.has('prompt')) {
-              parsed.searchParams.set('prompt', 'select_account');
-              authUrl = parsed.toString();
+              originalRedirectTo = redirectTo;
+              appOrigin = new URL(redirectTo).origin;
             }
           } catch {}
 
-          const authWindow = new BrowserWindow({
-            width: 600,
-            height: 700,
-            parent: mainWindow || undefined,
-            modal: true,
-            title: 'Sign In',
-            webPreferences: {
-              partition: 'persist:webpages',
-              nodeIntegration: false,
-              contextIsolation: true,
-            },
-          });
+          // Start a temporary HTTP server to catch the OAuth callback tokens
+          const tokenServer = http.createServer((req, res) => {
+            // CORS headers for the POST from our own page
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
-          authWindow.loadURL(authUrl);
-
-          let callbackReached = false;
-          let authDone = false;
-
-          const finishAuth = (navUrl: string) => {
-            if (authDone) return;
-            authDone = true;
-            console.log(`[WebView Auth] OAuth flow complete, SPA navigated to: ${navUrl}`);
-            console.log('[WebView Auth] Closing popup, reloading webview...');
-            authWindow.close();
-            // Reload the webview — the session cookie is shared via the partition
-            // so the SPA's AuthContext will detect the valid session
-            contents.loadURL(appOrigin || contents.getURL());
-          };
-
-          const checkNav = (_ev: any, navUrl: string) => {
-            if (navUrl.includes('/auth/callback')) {
-              callbackReached = true;
+            if (req.method === 'OPTIONS') {
+              res.writeHead(204);
+              res.end();
               return;
             }
-            // After callback, any same-origin navigation means OAuth is done
-            if (callbackReached && appOrigin && navUrl.startsWith(appOrigin)) {
-              finishAuth(navUrl);
-            }
-          };
 
-          // did-navigate: fires for full page navigations
-          authWindow.webContents.on('did-navigate', checkNav);
-          // did-navigate-in-page: fires for pushState/replaceState (React Router)
-          authWindow.webContents.on('did-navigate-in-page', checkNav);
-
-          // Handle the case where the user closes the popup manually
-          authWindow.on('closed', () => {
-            if (callbackReached && !authDone) {
-              authDone = true;
-              contents.loadURL(appOrigin || contents.getURL());
+            if (req.url === '/auth-callback') {
+              // Serve a page that extracts tokens from the hash and sends them back
+              res.writeHead(200, { 'Content-Type': 'text/html' });
+              res.end(`<!DOCTYPE html>
+<html><head><title>Sign-in Complete</title>
+<style>
+  body { font-family: -apple-system, system-ui, sans-serif; display: flex;
+    justify-content: center; align-items: center; height: 100vh; margin: 0;
+    background: #1a1a2e; color: #e0e0e0; }
+  .card { text-align: center; padding: 2rem; border-radius: 12px;
+    background: #16213e; box-shadow: 0 4px 20px rgba(0,0,0,0.3); }
+  h2 { color: #4ade80; margin-bottom: 0.5rem; }
+  p { color: #94a3b8; }
+  .spinner { width: 24px; height: 24px; border: 3px solid #334155;
+    border-top-color: #4ade80; border-radius: 50%; animation: spin 0.8s linear infinite;
+    margin: 1rem auto; }
+  @keyframes spin { to { transform: rotate(360deg); } }
+</style></head>
+<body><div class="card">
+  <h2>Sign-in complete!</h2>
+  <div class="spinner"></div>
+  <p>Transferring session to HiveCommand...<br>You can close this tab.</p>
+</div>
+<script>
+  const hash = window.location.hash.substring(1);
+  if (hash) {
+    const params = Object.fromEntries(new URLSearchParams(hash));
+    fetch('/receive-token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(params)
+    }).then(() => {
+      document.querySelector('h2').textContent = 'Done!';
+      document.querySelector('p').textContent = 'You can close this tab and return to HiveCommand.';
+      document.querySelector('.spinner').style.display = 'none';
+    });
+  } else {
+    document.querySelector('h2').textContent = 'No tokens received';
+    document.querySelector('p').textContent = 'Something went wrong. Try again from HiveCommand.';
+    document.querySelector('.spinner').style.display = 'none';
+  }
+</script></body></html>`);
+              return;
             }
+
+            if (req.url === '/receive-token' && req.method === 'POST') {
+              let body = '';
+              req.on('data', (chunk: Buffer) => { body += chunk.toString(); });
+              req.on('end', () => {
+                res.writeHead(200, { 'Content-Type': 'application/json' });
+                res.end('{"ok":true}');
+
+                try {
+                  const tokens = JSON.parse(body);
+                  const accessToken = tokens.access_token || '';
+                  const refreshToken = tokens.refresh_token || '';
+                  const expiresIn = tokens.expires_in || '3600';
+                  const tokenType = tokens.token_type || 'bearer';
+
+                  if (accessToken) {
+                    console.log('[WebView Auth] Received tokens, forwarding to webview...');
+                    // Build the hash fragment with all token params
+                    const hashParams = new URLSearchParams();
+                    hashParams.set('access_token', accessToken);
+                    hashParams.set('refresh_token', refreshToken);
+                    hashParams.set('expires_in', expiresIn);
+                    hashParams.set('token_type', tokenType);
+                    if (tokens.provider_token) hashParams.set('provider_token', tokens.provider_token);
+                    if (tokens.provider_refresh_token) hashParams.set('provider_refresh_token', tokens.provider_refresh_token);
+
+                    // Navigate webview to the app's original callback URL with tokens
+                    // in the hash fragment — this lets the app's own Supabase client
+                    // process the tokens through its normal auth callback handler.
+                    const callbackUrl = (originalRedirectTo || appOrigin || contents.getURL())
+                      + '#' + hashParams.toString();
+                    console.log('[WebView Auth] Navigating webview to callback:', callbackUrl.replace(/access_token=[^&]+/, 'access_token=***'));
+                    contents.loadURL(callbackUrl);
+                  }
+                } catch (err) {
+                  console.error('[WebView Auth] Failed to process tokens:', err);
+                }
+
+                // Shut down the temp server after a short delay
+                setTimeout(() => {
+                  tokenServer.close();
+                  console.log('[WebView Auth] Token bridge server closed');
+                }, 2000);
+              });
+              return;
+            }
+
+            // Anything else — 404
+            res.writeHead(404);
+            res.end('Not found');
+          });
+
+          tokenServer.listen(0, '127.0.0.1', () => {
+            const port = (tokenServer.address() as any).port;
+            console.log(`[WebView Auth] Token bridge server on port ${port}`);
+
+            // Rewrite the OAuth URL to redirect back to our token bridge
+            const parsed = new URL(url);
+            parsed.searchParams.set('redirect_to', `http://127.0.0.1:${port}/auth-callback`);
+            const authUrl = parsed.toString();
+
+            shell.openExternal(authUrl);
+
+            // Auto-cleanup after 5 minutes in case OAuth is abandoned
+            setTimeout(() => {
+              tokenServer.close();
+            }, 5 * 60 * 1000);
           });
         }
       });

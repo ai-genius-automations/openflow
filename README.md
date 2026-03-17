@@ -216,7 +216,7 @@ hivecommand/
 │   └── src/
 │       └── speech/      # Whisper STT integration
 ├── bin/                 # CLI launcher
-└── scripts/             # Install, build-release, update, and service scripts
+└── scripts/             # Install, release, build-archive, update, and service scripts
 ```
 
 ---

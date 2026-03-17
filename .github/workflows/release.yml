@@ -29,7 +29,7 @@ jobs:
             dashboard/package-lock.json
 
       - name: Build release archive
-        run: bash scripts/build-release.sh
+        run: bash scripts/build-archive.sh
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4

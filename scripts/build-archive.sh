@@ -3,8 +3,8 @@
 # Produces: hivecommand-vX.Y.Z.tar.gz (pre-built, ready to extract and run)
 #
 # Usage:
-#   bash scripts/build-release.sh           # uses version from server/package.json
-#   VERSION=0.2.0 bash scripts/build-release.sh
+#   bash scripts/build-archive.sh           # uses version from server/package.json
+#   VERSION=0.2.0 bash scripts/build-archive.sh
 
 set -euo pipefail
 
