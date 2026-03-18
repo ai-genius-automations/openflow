@@ -6,7 +6,7 @@ import { api } from './lib/api';
 import { getPendingTerminalCount, onTerminalConnectionChange } from './components/Terminal';
 import { ProjectDashboard } from './components/ProjectDashboard';
 import { ProjectView, cleanupProjectStorage } from './components/ProjectView';
-import { X, LayoutGrid, FolderOpen, Monitor, Loader2, Settings, ArrowUpCircle, AlertTriangle } from 'lucide-react';
+import { X, LayoutGrid, FolderOpen, Monitor, Loader2, Settings, ArrowUpCircle } from 'lucide-react';
 import { isDesktop, getDesktopVersion } from './lib/tauri';
 import { AgentGuideButton } from './components/AgentGuide';
 import { CloseTabModal } from './components/CloseTabModal';
@@ -106,7 +106,6 @@ function Dashboard() {
     retry: false,
   });
   const [updateDismissed, setUpdateDismissed] = useState(false);
-  const [showUpdateConfirm, setShowUpdateConfirm] = useState(false);
 
   // Desktop app version (Tauri only)
   const [desktopVersion, setDesktopVersion] = useState<string | null>(null);
@@ -121,14 +120,17 @@ function Dashboard() {
   const projects = projectsData?.projects || [];
   const sessions = sessionsData?.sessions || [];
 
-  // Trigger the update via server-side endpoint.
-  // The server opens a system terminal running the installer.
-  // The installer handles stopping the server, updating, and restarting everything.
+  // Copy update command to clipboard and show brief confirmation.
+  const [updateCopied, setUpdateCopied] = useState(false);
   const triggerUpdate = useCallback(async () => {
+    const cmd = 'curl -fsSL https://raw.githubusercontent.com/ai-genius-automations/hivecommand/main/scripts/install.sh | bash';
     try {
-      await fetch('/api/update', { method: 'POST' });
+      await navigator.clipboard.writeText(cmd);
+      setUpdateCopied(true);
+      setTimeout(() => setUpdateCopied(false), 4000);
     } catch {
-      // Non-fatal — server may be shutting down
+      // Fallback: select from prompt
+      window.prompt('Copy this command and run it in your terminal:', cmd);
     }
   }, []);
 
@@ -463,21 +465,11 @@ function Dashboard() {
               {versionData.name && <span> &mdash; {versionData.name}</span>}
             </span>
             <button
-              onClick={() => {
-                // Check for running sessions — show confirmation if any exist
-                const runningSessions = sessionsData?.sessions?.filter(
-                  (s) => s.status === 'running' || s.status === 'pending'
-                ) || [];
-                if (runningSessions.length > 0) {
-                  setShowUpdateConfirm(true);
-                } else {
-                  triggerUpdate();
-                }
-              }}
+              onClick={() => triggerUpdate()}
               className="px-2 py-0.5 rounded text-[10px] font-medium transition-colors hover:brightness-110"
               style={{ background: 'rgba(96, 165, 250, 0.2)', color: '#60a5fa' }}
             >
-              Update Now
+              {updateCopied ? 'Copied — paste in terminal!' : 'Copy Update Command'}
             </button>
             {versionData.url && (
               <a
@@ -498,53 +490,6 @@ function Dashboard() {
           >
             <X className="w-3 h-3" />
           </button>
-        </div>
-      )}
-
-      {/* Update confirmation modal */}
-      {showUpdateConfirm && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.6)' }}>
-          <div className="rounded-xl shadow-2xl max-w-md w-full mx-4 p-5" style={{ background: 'var(--bg-secondary)', border: '1px solid var(--border)' }}>
-            <div className="flex items-start gap-3 mb-4">
-              <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5" style={{ color: '#facc15' }} />
-              <div>
-                <h3 className="text-sm font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
-                  Update to v{versionData?.latest}?
-                </h3>
-                <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
-                  You have{' '}
-                  <strong style={{ color: 'var(--text-primary)' }}>
-                    {sessionsData?.sessions?.filter((s) => s.status === 'running' || s.status === 'pending').length || 0} active session(s)
-                  </strong>
-                  . While sessions typically persist across updates, you may want to close them or pop out
-                  into system terminals first to be safe.
-                </p>
-                <p className="text-xs mt-2" style={{ color: 'var(--text-secondary)' }}>
-                  The update will stop the server and restart it with the new version.
-                  {isDesktop && ' The desktop app will also be updated and relaunched.'}
-                </p>
-              </div>
-            </div>
-            <div className="flex justify-end gap-2">
-              <button
-                onClick={() => setShowUpdateConfirm(false)}
-                className="px-3 py-1.5 rounded text-xs font-medium transition-colors"
-                style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
-              >
-                Cancel
-              </button>
-              <button
-                onClick={() => {
-                  setShowUpdateConfirm(false);
-                  triggerUpdate();
-                }}
-                className="px-3 py-1.5 rounded text-xs font-medium transition-colors"
-                style={{ background: '#3b82f6', color: 'white' }}
-              >
-                Update Now
-              </button>
-            </div>
-          </div>
         </div>
       )}
 

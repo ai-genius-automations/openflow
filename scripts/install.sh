@@ -718,6 +718,12 @@ install_desktop_app() {
     return 0
   fi
 
+  # Kill any running desktop app before installing — dpkg replaces the binary
+  # while the old process is still running, causing crashes and tray conflicts.
+  pkill -f "hivecommand-desktop" 2>/dev/null || true
+  pkill -f "[Hh]ive[Cc]ommand.*electron" 2>/dev/null || true
+  sleep 2  # wait for process to fully exit and release tray
+
   case "$OS" in
     Linux*)
       log_info "Installing desktop app (.deb)..."
