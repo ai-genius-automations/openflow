@@ -222,36 +222,61 @@ async function start() {
     }
   });
 
-  // Trigger self-update — opens a system terminal running the installer.
-  // The installer itself handles stopping the server, downloading, and restarting.
-  // We do NOT exit here — the installer will kill us when it's ready.
+  // Trigger self-update — writes a temp script, opens it in a system terminal.
+  // The script sleeps briefly (so this server can exit cleanly first), then runs
+  // the installer. Terminal stays open on error so the user can see what happened.
   app.post('/api/update', async (req, reply) => {
-    const { spawn, exec } = await import('child_process');
-    const installCmd = 'curl -fsSL https://raw.githubusercontent.com/ai-genius-automations/hivecommand/main/scripts/install.sh | bash';
+    const { spawn, exec, execSync } = await import('child_process');
+    const { writeFileSync, chmodSync } = await import('fs');
+    const { tmpdir } = await import('os');
+    const { join } = await import('path');
+
+    // Write a self-deleting update script that waits for the server to exit
+    const scriptPath = join(tmpdir(), `hivecommand-update-${Date.now()}.sh`);
+    writeFileSync(scriptPath, `#!/bin/bash
+echo "HiveCommand Update"
+echo "==================="
+echo ""
+echo "Waiting for server to shut down..."
+sleep 3
+echo "Running installer..."
+echo ""
+curl -fsSL https://raw.githubusercontent.com/ai-genius-automations/hivecommand/main/scripts/install.sh | bash
+STATUS=$?
+echo ""
+if [ $STATUS -ne 0 ]; then
+  echo "\\033[0;31mUpdate failed (exit code $STATUS)\\033[0m"
+fi
+echo ""
+echo "Press Enter to close this window..."
+read -r
+rm -f "${scriptPath}"
+`, 'utf-8');
+    chmodSync(scriptPath, 0o755);
+
     const isMac = process.platform === 'darwin';
 
     if (isMac) {
-      spawn('open', ['-a', 'Terminal', '--args', '-e', installCmd], { detached: true, stdio: 'ignore' }).unref();
+      spawn('open', ['-a', 'Terminal', scriptPath], { detached: true, stdio: 'ignore' }).unref();
     } else {
-      // Find a terminal emulator and run the install command in it
       exec('which gnome-terminal xfce4-terminal konsole alacritty kitty wezterm xterm', { timeout: 3000 }, (_err, stdout) => {
         const terminals = (stdout || '').trim().split('\n').filter(Boolean);
         const term = terminals[0] || 'xterm';
         const basename = term.split('/').pop() || '';
         if (basename === 'gnome-terminal') {
-          spawn(term, ['--', 'bash', '-c', installCmd], { detached: true, stdio: 'ignore' }).unref();
-        } else if (basename === 'xfce4-terminal') {
-          spawn(term, ['-e', `bash -c '${installCmd}'`], { detached: true, stdio: 'ignore' }).unref();
+          spawn(term, ['--', 'bash', scriptPath], { detached: true, stdio: 'ignore' }).unref();
         } else if (basename === 'konsole') {
-          spawn(term, ['-e', 'bash', '-c', installCmd], { detached: true, stdio: 'ignore' }).unref();
+          spawn(term, ['-e', 'bash', scriptPath], { detached: true, stdio: 'ignore' }).unref();
         } else {
-          // alacritty, kitty, wezterm, xterm, etc.
-          spawn(term, ['-e', `bash -c '${installCmd}'`], { detached: true, stdio: 'ignore' }).unref();
+          spawn(term, ['-e', `bash ${scriptPath}`], { detached: true, stdio: 'ignore' }).unref();
         }
       });
     }
 
     reply.send({ ok: true, message: 'Update started in external terminal.' });
+    // Exit after a short delay — the update script waits 3s before starting,
+    // so the terminal is fully spawned and independent before we die.
+    setTimeout(() => process.exit(0), 1000);
   });
 
   // Health check — read version from package.json
