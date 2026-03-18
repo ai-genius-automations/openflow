@@ -382,6 +382,9 @@ if [ -f "$INSTALL_DIR/version.json" ]; then
 fi
 
 # Install server production dependencies (native modules compile on this platform)
+# Reset CWD — the old $INSTALL_DIR was deleted and replaced above, so the shell's
+# working directory may no longer exist (causes npm "uv_cwd" ENOENT).
+cd "$INSTALL_DIR" || cd /
 log_info "Installing server dependencies..."
 if ! npm install --omit=dev --prefix "$INSTALL_DIR/server" 2>&1; then
   log_error "npm install failed — see errors above"
