@@ -1,7 +1,7 @@
 {
   "name": "@hivecommand/dashboard",
   "private": true,
-  "version": "0.1.27-alpha",
+  "version": "0.1.28-alpha",
   "description": "HiveCommand dashboard — React + Vite frontend",
   "author": "AI Genius Automations <support@aigeniusautomations.com>",
   "license": "Apache-2.0 WITH Commons-Clause",
