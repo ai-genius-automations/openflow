@@ -95,16 +95,20 @@ function createWindow() {
 
   // Keyboard shortcuts (menu bar is hidden)
   mainWindow.webContents.on('before-input-event', (event, input) => {
-    if (input.key === 'F12' || (input.control && input.shift && input.key === 'I')) {
+    // F12 / Ctrl+Shift+I (Linux/Win) / Cmd+Opt+I (macOS): DevTools
+    if (input.key === 'F12' || ((input.control || input.meta) && input.shift && input.key === 'I') || (input.meta && input.alt && input.key === 'I')) {
       mainWindow?.webContents.toggleDevTools();
     }
-    // F5: refresh
-    if (input.key === 'F5' && !input.control && !input.shift && input.type === 'keyDown') {
+    // F5 / Cmd+R (macOS): refresh
+    if (input.type === 'keyDown' && (
+      (input.key === 'F5' && !input.control && !input.shift) ||
+      (input.meta && !input.shift && input.key.toLowerCase() === 'r')
+    )) {
       event.preventDefault();
       mainWindow?.webContents.reload();
     }
-    // Ctrl+Shift+R: hard refresh (bypass cache)
-    if (input.key.toLowerCase() === 'r' && input.control && input.shift && input.type === 'keyDown') {
+    // Ctrl+Shift+R (Linux/Win) / Cmd+Shift+R (macOS): hard refresh (bypass cache)
+    if (input.key.toLowerCase() === 'r' && (input.control || input.meta) && input.shift && input.type === 'keyDown') {
       event.preventDefault();
       mainWindow?.webContents.reloadIgnoringCache();
     }
