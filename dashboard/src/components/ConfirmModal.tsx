@@ -9,6 +9,7 @@ interface ConfirmModalProps {
   variant?: 'danger' | 'warning';
   onConfirm: () => void;
   onCancel: () => void;
+  children?: React.ReactNode;
 }
 
 export function ConfirmModal({
@@ -19,6 +20,7 @@ export function ConfirmModal({
   variant = 'danger',
   onConfirm,
   onCancel,
+  children,
 }: ConfirmModalProps) {
   const cancelRef = useRef<HTMLButtonElement>(null);
 
@@ -67,6 +69,7 @@ export function ConfirmModal({
           <p className="text-xs leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
             {message}
           </p>
+          {children}
         </div>
 
         {/* Actions */}

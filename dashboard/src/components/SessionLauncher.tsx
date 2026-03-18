@@ -289,13 +289,22 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
   const [showReinitConfirm, setShowReinitConfirm] = useState(false);
   const [reinitConflicts, setReinitConflicts] = useState<{ settingsJson: boolean; claudeMd: boolean } | null>(null);
   const [reinitPending, setReinitPending] = useState(false);
+  const [reinstallDevcortex, setReinstallDevcortex] = useState(true);
 
   const reinitMutation = useMutation({
     mutationFn: () => api.projects.rufloInstall(project.id),
-    onSuccess: () => {
+    onSuccess: async () => {
       queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
       queryClient.invalidateQueries({ queryKey: ['ruflo-agents', project.id] });
       setShowReinitConfirm(false);
+      // Auto-reinstall DevCortex hooks if checkbox was checked and DevCortex is installed
+      if (reinstallDevcortex && devcortexInstalled) {
+        try {
+          await devcortexInstallMutation.mutateAsync(project.id);
+        } catch {
+          // DevCortex reinstall failed — ruflo reinit still succeeded
+        }
+      }
       setReinitPending(false);
     },
     onError: () => {
@@ -683,8 +692,25 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
             onCancel={() => {
               setShowReinitConfirm(false);
               setReinitConflicts(null);
+              setReinstallDevcortex(true);
             }}
-          />
+          >
+            {devcortexInstalled && (
+              <label
+                className="flex items-center gap-2 mt-3 cursor-pointer select-none"
+                style={{ color: 'var(--text-secondary)' }}
+              >
+                <input
+                  type="checkbox"
+                  checked={reinstallDevcortex}
+                  onChange={(e) => setReinstallDevcortex(e.target.checked)}
+                  className="rounded"
+                  style={{ accentColor: '#a855f7' }}
+                />
+                <span className="text-xs">Reinstall DevCortex hooks after re-init</span>
+              </label>
+            )}
+          </ConfirmModal>
         )}
       </div>
     </div>
