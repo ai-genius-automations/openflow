@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="dashboard/public/octoally-logo-lg.png" alt="OctoAlly" width="384" height="256">
+  <img src="dashboard/public/octoally-logo-lg.png" alt="OctoAlly" width="377" height="256">
   <h1 align="center">OctoAlly</h1>
   <p align="center">
     <strong>AI Coding Session Orchestration Dashboard</strong>
