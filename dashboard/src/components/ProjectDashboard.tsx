@@ -1351,11 +1351,8 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
             pointerEvents: splashFading ? 'none' : 'auto',
           }}
         >
-          <img src="/octoally-icon.png" alt="" className="w-56 h-56 object-contain mb-4" />
-          <h2 className="text-2xl font-bold">
-            <span style={{ color: '#ef4444' }}>Octo</span><span style={{ color: 'var(--text-primary)' }}>Ally</span>
-          </h2>
-          <p className="text-sm mt-2" style={{ color: 'var(--text-secondary)' }}>Work smarter with more arms</p>
+          <img src="/octoally-logo-lg.png" alt="" className="mb-4" style={{ width: '28rem', height: 'auto' }} />
+          <p className="text-2xl font-semibold" style={{ color: 'var(--text-secondary)' }}>Loading...</p>
         </div>
       )}
 

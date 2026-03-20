@@ -390,6 +390,10 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
   return (
     <div className="h-full overflow-y-auto p-6 pt-8">
       <div className="w-full max-w-4xl mx-auto space-y-6">
+        {/* Logo */}
+        <div className="flex justify-center">
+          <img src="/octoally-icon.png" alt="" className="w-20 h-20 object-contain" />
+        </div>
         {/* Project info card */}
         <div
           className="rounded-xl border p-5"
