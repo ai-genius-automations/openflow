@@ -289,8 +289,7 @@ if (!isInstalled()) {
         if (desktopBin) {
           log(CYAN, "Launching desktop app...");
           try {
-            const desktop = spawn(desktopBin, [], { stdio: "ignore", detached: true });
-            desktop.unref();
+            execSync(`nohup "${desktopBin}" >/dev/null 2>&1 &`, { stdio: "pipe" });
           } catch (err) {
             log(YELLOW, `Desktop app launch failed: ${err.message}`);
           }
