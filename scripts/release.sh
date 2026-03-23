@@ -183,11 +183,11 @@ else
   echo "✓ v${NEW_VERSION} released — GitHub Actions workflow triggered"
   echo "  https://github.com/ai-genius-automations/octoally/actions"
 
-  # --- npm publish (opt-in) ---------------------------------------------------
+  # --- npm publish flag (opt-in) -----------------------------------------------
   if [ "$NPM_PUBLISH" = true ]; then
     echo ""
-    echo "Publishing to npm..."
-    npm publish
-    echo "✓ Published octoally@${NEW_VERSION} to npm"
+    echo "Setting NPM_PUBLISH flag for GitHub Actions..."
+    gh variable set NPM_PUBLISH --body "true"
+    echo "✓ npm publish will run after the release workflow completes"
   fi
 fi

@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Download, X } from 'lucide-react';
+import { Download, X, Copy, Check } from 'lucide-react';
 import { api } from '../lib/api';
 import { isDesktop, getDesktopVersion } from '../lib/tauri';
 
@@ -14,23 +14,23 @@ function compareSemver(a: string, b: string): number {
   return 0;
 }
 
-interface DesktopUpdateBannerProps {
+interface UpdateBannerProps {
   active?: boolean;
 }
 
-export function DesktopUpdateBanner({ active = true }: DesktopUpdateBannerProps) {
+export function DesktopUpdateBanner({ active = true }: UpdateBannerProps) {
   const [updateInfo, setUpdateInfo] = useState<{
     version: string;
     url: string;
     currentVersion: string | null;
   } | null>(null);
   const [dismissed, setDismissed] = useState(false);
+  const [copied, setCopied] = useState(false);
 
   useEffect(() => {
     if (!active || dismissed) return;
-    if (!isDesktop) return;
 
-    const sessionKey = 'octoally-desktop-update-checked';
+    const sessionKey = 'octoally-update-checked';
     if (sessionStorage.getItem(sessionKey)) return;
 
     let cancelled = false;
@@ -38,9 +38,12 @@ export function DesktopUpdateBanner({ active = true }: DesktopUpdateBannerProps)
     async function check() {
       try {
         let currentVersion: string | undefined;
-        try {
-          currentVersion = (await getDesktopVersion()) || undefined;
-        } catch {}
+
+        if (isDesktop) {
+          try {
+            currentVersion = (await getDesktopVersion()) || undefined;
+          } catch {}
+        }
 
         const data = await api.versionCheck();
         sessionStorage.setItem(sessionKey, '1');
@@ -48,16 +51,20 @@ export function DesktopUpdateBanner({ active = true }: DesktopUpdateBannerProps)
         if (cancelled) return;
         if (!data.updateAvailable) return;
 
-        if (currentVersion && data.latest) {
+        // For desktop, compare against desktop version
+        if (isDesktop && currentVersion && data.latest) {
           if (compareSemver(data.latest, currentVersion) <= 0) return;
-        } else if (!currentVersion) {
-          return;
+        }
+
+        // For web/server, compare against server-reported current version
+        if (!isDesktop && data.current && data.latest) {
+          if (compareSemver(data.latest, data.current) <= 0) return;
         }
 
         setUpdateInfo({
           version: data.latest,
           url: data.url,
-          currentVersion: currentVersion || null,
+          currentVersion: currentVersion || data.current || null,
         });
       } catch {
         // Silently fail — update check is non-critical
@@ -69,6 +76,15 @@ export function DesktopUpdateBanner({ active = true }: DesktopUpdateBannerProps)
   }, [active, dismissed]);
 
   if (!updateInfo || dismissed) return null;
+
+  const updateCommand = 'npx octoally';
+
+  function handleCopy() {
+    navigator.clipboard.writeText(updateCommand).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    }).catch(() => {});
+  }
 
   return (
     <div style={{
@@ -85,22 +101,29 @@ export function DesktopUpdateBanner({ active = true }: DesktopUpdateBannerProps)
       <Download className="w-4 h-4 flex-shrink-0" style={{ color: '#60a5fa' }} />
       <div style={{ flex: 1 }}>
         <span style={{ color: 'var(--text-primary)' }}>
-          Desktop app <strong>v{updateInfo.version}</strong> available
+          Update <strong>v{updateInfo.version}</strong> available
           {updateInfo.currentVersion && <span style={{ color: 'var(--text-secondary)' }}> (current: v{updateInfo.currentVersion})</span>}
         </span>
+        <div style={{ color: 'var(--text-secondary)', fontSize: 12, marginTop: 2 }}>
+          Run <code style={{
+            background: 'var(--bg-tertiary, #1e1e2e)',
+            padding: '1px 6px',
+            borderRadius: 4,
+            fontSize: 12,
+            fontFamily: 'monospace',
+          }}>{updateCommand}</code> in your terminal
+        </div>
       </div>
       <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
-        {updateInfo.url && (
-          <a
-            href={updateInfo.url}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors"
-            style={{ background: '#3b82f622', color: '#60a5fa', border: '1px solid #3b82f644' }}
-          >
-            <Download className="w-3 h-3" /> View Release
-          </a>
-        )}
+        <button
+          onClick={handleCopy}
+          className="flex items-center gap-1.5 px-3 py-1.5 rounded text-xs font-medium transition-colors"
+          style={{ background: '#3b82f622', color: '#60a5fa', border: '1px solid #3b82f644' }}
+          title="Copy command"
+        >
+          {copied ? <Check className="w-3 h-3" /> : <Copy className="w-3 h-3" />}
+          {copied ? 'Copied' : 'Copy'}
+        </button>
         <button
           onClick={() => setDismissed(true)}
           className="p-1 rounded transition-colors hover:bg-white/10"

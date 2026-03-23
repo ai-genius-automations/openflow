@@ -1,11 +1,12 @@
 #!/usr/bin/env node
 // OctoAlly CLI — thin npm wrapper
-// Installs OctoAlly from GitHub releases, then proxies commands to the local CLI.
+// Auto-installs on first run, checks for updates, and launches the app.
 
 import { execSync, spawn } from "node:child_process";
-import { existsSync, mkdirSync, writeFileSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 
 const INSTALL_DIR = process.env.OCTOALLY_INSTALL_DIR || join(homedir(), "octoally");
@@ -27,20 +28,55 @@ function isInstalled() {
   return existsSync(LOCAL_CLI) && existsSync(join(INSTALL_DIR, "server", "dist"));
 }
 
-async function getLatestVersion() {
-  const res = await fetch(`https://api.github.com/repos/${GITHUB_REPO}/releases?per_page=5`);
-  if (!res.ok) throw new Error(`GitHub API error: ${res.status}`);
-  const releases = await res.json();
-  const stable = releases.find((r) => !r.draft && !r.prerelease) || releases[0];
-  if (!stable) throw new Error("No releases found");
-  return { tag: stable.tag_name, version: stable.tag_name.replace(/^v/, ""), url: stable.html_url };
+/** Read the npm package version (baked into this wrapper at publish time). */
+function getPackageVersion() {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "package.json");
+    const pkg = JSON.parse(readFileSync(pkgPath, "utf8"));
+    return pkg.version || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the locally installed version from ~/octoally/version.json. */
+function getLocalVersion() {
+  try {
+    const versionFile = join(INSTALL_DIR, "version.json");
+    const data = JSON.parse(readFileSync(versionFile, "utf8"));
+    return data.version || null;
+  } catch {
+    return null;
+  }
+}
+
+/** Compare two semver strings. Returns true if a > b. */
+function isNewer(a, b) {
+  if (!a || !b) return false;
+  const pa = a.split(".").map(Number);
+  const pb = b.split(".").map(Number);
+  for (let i = 0; i < 3; i++) {
+    if ((pa[i] || 0) > (pb[i] || 0)) return true;
+    if ((pa[i] || 0) < (pb[i] || 0)) return false;
+  }
+  return false;
+}
+
+async function promptYesNo(question) {
+  // Non-interactive (piped input) — default to yes
+  if (!process.stdin.isTTY) return true;
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  const answer = await new Promise((resolve) => {
+    rl.question(`${BOLD}${question} [Y/n]:${NC} `, resolve);
+  });
+  rl.close();
+  return answer.toLowerCase() !== "n";
 }
 
 async function install() {
   log(CYAN, "Installing OctoAlly...");
   log(CYAN, `Install directory: ${INSTALL_DIR}`);
 
-  // Check prerequisites
   try {
     execSync("node --version", { stdio: "pipe" });
   } catch {
@@ -48,12 +84,6 @@ async function install() {
     process.exit(1);
   }
 
-  // Get latest release
-  log(CYAN, "Fetching latest release...");
-  const { version } = await getLatestVersion();
-  log(CYAN, `Latest version: v${version}`);
-
-  // Clone and build
   if (!existsSync(INSTALL_DIR)) {
     log(CYAN, "Cloning repository...");
     execSync(`git clone --depth 1 https://github.com/${GITHUB_REPO}.git "${INSTALL_DIR}"`, {
@@ -64,13 +94,11 @@ async function install() {
     execSync("git pull --ff-only", { cwd: INSTALL_DIR, stdio: "inherit" });
   }
 
-  // Install dependencies
   log(CYAN, "Installing dependencies...");
   execSync("npm install", { cwd: INSTALL_DIR, stdio: "inherit" });
   execSync("npm install", { cwd: join(INSTALL_DIR, "server"), stdio: "inherit" });
   execSync("npm install", { cwd: join(INSTALL_DIR, "dashboard"), stdio: "inherit" });
 
-  // Build
   log(CYAN, "Building...");
   execSync("npm run build", { cwd: INSTALL_DIR, stdio: "inherit" });
 
@@ -85,9 +113,13 @@ async function install() {
     log(YELLOW, `Could not create symlink at ${symlinkTarget}`);
   }
 
+  const version = getLocalVersion() || "unknown";
   log(GREEN, `OctoAlly v${version} installed successfully!`);
-  log(CYAN, `Start with: octoally start`);
-  log(CYAN, `Dashboard:  http://localhost:42010`);
+}
+
+/** Delegate update to the installed bin/octoally update (handles stop/pull/build/restart). */
+function runUpdate() {
+  execSync(`"${LOCAL_CLI}" update`, { cwd: INSTALL_DIR, stdio: "inherit" });
 }
 
 function proxyCommand(args) {
@@ -102,33 +134,78 @@ function proxyCommand(args) {
   });
 }
 
-// Main
-const args = process.argv.slice(2);
-const command = args[0] || "help";
+// ── Main ─────────────────────────────────────────────────────────────────────
 
-if (command === "install" || !isInstalled()) {
-  if (!isInstalled()) {
-    log(YELLOW, "OctoAlly is not installed yet.");
-    const rl = createInterface({ input: process.stdin, output: process.stdout });
-    const answer = await new Promise((resolve) => {
-      rl.question(`${BOLD}Install to ${INSTALL_DIR}? [Y/n]:${NC} `, resolve);
-    });
-    rl.close();
-    if (answer.toLowerCase() === "n") {
-      log(CYAN, "Installation cancelled.");
-      process.exit(0);
+const args = process.argv.slice(2);
+const command = args[0] || "";
+
+// Explicit --install flag
+if (command === "--install" || command === "install") {
+  if (isInstalled()) {
+    log(YELLOW, "OctoAlly is already installed. Use 'npx octoally --update' to update.");
+    process.exit(0);
+  }
+  if (await promptYesNo(`Install OctoAlly to ${INSTALL_DIR}?`)) {
+    try {
+      await install();
+    } catch (err) {
+      log(RED, `Installation failed: ${err.message}`);
+      process.exit(1);
     }
   }
-  try {
-    await install();
-    // If there were additional args beyond "install", run them
-    if (command !== "install" && command !== "help") {
-      proxyCommand(args);
-    }
-  } catch (err) {
-    log(RED, `Installation failed: ${err.message}`);
+  process.exit(0);
+}
+
+// Explicit --update flag
+if (command === "--update") {
+  if (!isInstalled()) {
+    log(RED, "OctoAlly is not installed. Run: npx octoally --install");
     process.exit(1);
   }
+  try {
+    runUpdate();
+  } catch (err) {
+    log(RED, `Update failed: ${err.message}`);
+    process.exit(1);
+  }
+  process.exit(0);
+}
+
+// ── Not installed → offer to install ─────────────────────────────────────────
+
+if (!isInstalled()) {
+  log(YELLOW, "OctoAlly is not installed yet.");
+  if (await promptYesNo(`Install to ${INSTALL_DIR}?`)) {
+    try {
+      await install();
+      log(CYAN, "Launching OctoAlly...\n");
+      proxyCommand(args.length ? args : ["start"]);
+    } catch (err) {
+      log(RED, `Installation failed: ${err.message}`);
+      process.exit(1);
+    }
+  } else {
+    log(CYAN, "Installation cancelled.");
+    process.exit(0);
+  }
 } else {
-  proxyCommand(args);
+  // ── Installed → check for updates, then launch ───────────────────────────
+
+  const packageVersion = getPackageVersion();
+  const localVersion = getLocalVersion();
+
+  if (packageVersion && localVersion && isNewer(packageVersion, localVersion)) {
+    log(YELLOW, `Update available: v${localVersion} → v${packageVersion}`);
+    if (await promptYesNo("Update before launching?")) {
+      try {
+        runUpdate();
+      } catch (err) {
+        log(RED, `Update failed: ${err.message}`);
+        log(CYAN, "Launching existing version...");
+      }
+    }
+  }
+
+  // Default action: no args → launch the app (start)
+  proxyCommand(args.length ? args : ["start"]);
 }
