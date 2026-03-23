@@ -21,6 +21,7 @@ CLAUDE.md.*.bak
 
 # Codex local configuration
 .codex/
+.agents/
 
 # Claude Flow runtime data
 .claude-flow/data/
