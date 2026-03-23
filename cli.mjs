@@ -10,6 +10,20 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createInterface } from "node:readline";
 
+// Re-entrancy guard: install.sh calls `octoally` commands which npx resolves
+// back to this script. Detect this and proxy to the real CLI instead.
+if (process.env.__OCTOALLY_NPX_ACTIVE === "1") {
+  const dir = process.env.OCTOALLY_INSTALL_DIR || join(homedir(), "octoally");
+  const cli = join(dir, "bin", "octoally");
+  if (existsSync(cli)) {
+    const c = spawn(cli, process.argv.slice(2), { stdio: "inherit", cwd: dir });
+    c.on("exit", (code) => process.exit(code ?? 0));
+    c.on("error", () => process.exit(1));
+    await new Promise(() => {});
+  }
+  process.exit(0);
+}
+
 const INSTALL_DIR = process.env.OCTOALLY_INSTALL_DIR || join(homedir(), "octoally");
 const GITHUB_REPO = "ai-genius-automations/octoally";
 const INSTALL_SCRIPT_URL = `https://raw.githubusercontent.com/${GITHUB_REPO}/main/scripts/install.sh`;
@@ -71,7 +85,7 @@ function runFreshInstall() {
   log(CYAN, "Running OctoAlly installer...\n");
   execSync(`bash -c "$(curl -fsSL ${INSTALL_SCRIPT_URL})"`, {
     stdio: "inherit",
-    env: { ...process.env, OCTOALLY_INSTALL_DIR: INSTALL_DIR },
+    env: { ...process.env, OCTOALLY_INSTALL_DIR: INSTALL_DIR, __OCTOALLY_NPX_ACTIVE: "1" },
   });
 }
 
