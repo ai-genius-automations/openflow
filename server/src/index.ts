@@ -225,7 +225,7 @@ async function start() {
   // Return the update command — the dashboard handles copy-to-clipboard.
   app.get('/api/update-command', async () => {
     return {
-      command: 'npx octoally',
+      command: 'npx -y octoally',
     };
   });
 

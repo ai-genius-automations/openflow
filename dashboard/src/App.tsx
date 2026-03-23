@@ -143,7 +143,7 @@ function Dashboard() {
   // Copy update command to clipboard and show brief confirmation.
   const [updateCopied, setUpdateCopied] = useState(false);
   const triggerUpdate = useCallback(async () => {
-    const cmd = 'npx octoally';
+    const cmd = 'npx -y octoally';
     try {
       await navigator.clipboard.writeText(cmd);
       setUpdateCopied(true);

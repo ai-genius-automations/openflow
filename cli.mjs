@@ -241,16 +241,14 @@ if (!isInstalled()) {
   const localVersion = getLocalVersion();
 
   if (packageVersion && localVersion && isNewer(packageVersion, localVersion)) {
-    log(YELLOW, `Update available: v${localVersion} → v${packageVersion}`);
-    if (await promptYesNo("Update now?")) {
-      try {
-        runUpdate(packageVersion);
-        // Server already started by runUpdate — just exit cleanly
-        process.exit(0);
-      } catch (err) {
-        log(RED, `Update failed: ${err.message}`);
-        log(CYAN, "Launching existing version...");
-      }
+    log(CYAN, `Updating v${localVersion} → v${packageVersion}...`);
+    try {
+      runUpdate(packageVersion);
+      // Server already started by runUpdate — just exit cleanly
+      process.exit(0);
+    } catch (err) {
+      log(RED, `Update failed: ${err.message}`);
+      log(CYAN, "Launching existing version...");
     }
   }
 

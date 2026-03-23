@@ -77,7 +77,7 @@ export function DesktopUpdateBanner({ active = true }: UpdateBannerProps) {
 
   if (!updateInfo || dismissed) return null;
 
-  const updateCommand = 'npx octoally';
+  const updateCommand = 'npx -y octoally';
 
   function handleCopy() {
     navigator.clipboard.writeText(updateCommand).then(() => {
