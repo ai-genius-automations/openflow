@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
-import { Settings, Download, Check, Loader2, X, Cloud, HardDrive, Eye, EyeOff, Ear, Plus, Trash2, Sparkles, Timer } from 'lucide-react';
+import { Settings, Download, Check, Loader2, X, Cloud, HardDrive, Eye, EyeOff, Ear, Plus, Trash2, Sparkles, Timer, Clock } from 'lucide-react';
 import { invoke } from '../lib/tauri';
-import { useSpeechStore, downloadModel, stopMic, unloadModel, setWakePhrase, setSilenceTimeout } from '../lib/speech';
+import { useSpeechStore, downloadModel, stopMic, unloadModel, setWakePhrase, setSilenceTimeout, setMaxSpeechDuration } from '../lib/speech';
 
 interface ModelInfo {
   installed: boolean;
@@ -52,6 +52,7 @@ export function ModelSettingsModal({ onClose }: ModelSettingsModalProps) {
   const committedGroqKey = useRef(useSpeechStore.getState().groqApiKey);
   const committedWakePhrase = useRef(useSpeechStore.getState().wakePhrase);
   const committedSilenceTimeout = useRef(useSpeechStore.getState().silenceTimeoutMs);
+  const committedMaxSpeech = useRef(useSpeechStore.getState().maxSpeechMs);
 
   // Draft state — what the user is configuring (not yet saved)
   const [draftBackend, setDraftBackend] = useState<'local' | 'openai' | 'groq'>(committedBackend.current);
@@ -59,6 +60,7 @@ export function ModelSettingsModal({ onClose }: ModelSettingsModalProps) {
   const [draftGroqKey, setDraftGroqKey] = useState(committedGroqKey.current);
   const [draftWakePhrase, setDraftWakePhrase] = useState(committedWakePhrase.current);
   const [draftSilenceTimeout, setDraftSilenceTimeout] = useState(committedSilenceTimeout.current);
+  const [draftMaxSpeech, setDraftMaxSpeech] = useState(committedMaxSpeech.current);
   const [showApiKey, setShowApiKey] = useState(false);
   const [activeTab, setActiveTab] = useState<'speech' | 'commands'>('speech');
 
@@ -67,7 +69,8 @@ export function ModelSettingsModal({ onClose }: ModelSettingsModalProps) {
     || (draftBackend === 'openai' && draftOpenaiKey !== committedOpenaiKey.current)
     || (draftBackend === 'groq' && draftGroqKey !== committedGroqKey.current)
     || draftWakePhrase !== committedWakePhrase.current
-    || draftSilenceTimeout !== committedSilenceTimeout.current;
+    || draftSilenceTimeout !== committedSilenceTimeout.current
+    || draftMaxSpeech !== committedMaxSpeech.current;
 
   const loadModels = async () => {
     setLoading(true);
@@ -159,12 +162,18 @@ export function ModelSettingsModal({ onClose }: ModelSettingsModalProps) {
         await setSilenceTimeout(draftSilenceTimeout);
       }
 
+      // Save max speech duration if changed
+      if (draftMaxSpeech !== committedMaxSpeech.current) {
+        await setMaxSpeechDuration(draftMaxSpeech);
+      }
+
       // Update committed refs
       committedBackend.current = draftBackend;
       committedOpenaiKey.current = draftOpenaiKey;
       committedGroqKey.current = draftGroqKey;
       committedWakePhrase.current = draftWakePhrase;
       committedSilenceTimeout.current = draftSilenceTimeout;
+      committedMaxSpeech.current = draftMaxSpeech;
 
       onClose();
     } catch (e) {
@@ -180,6 +189,7 @@ export function ModelSettingsModal({ onClose }: ModelSettingsModalProps) {
     setDraftGroqKey(committedGroqKey.current);
     setDraftWakePhrase(committedWakePhrase.current);
     setDraftSilenceTimeout(committedSilenceTimeout.current);
+    setDraftMaxSpeech(committedMaxSpeech.current);
     onClose();
   };
 
@@ -404,6 +414,42 @@ export function ModelSettingsModal({ onClose }: ModelSettingsModalProps) {
             </div>
             <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
               How long to wait after you stop speaking before sending the audio for transcription. Shorter = more responsive but may cut you off mid-sentence. Longer = waits for natural pauses.
+            </p>
+          </div>
+
+          {/* Max speech duration */}
+          <div className="space-y-1.5">
+            <div className="flex items-center gap-1.5">
+              <Clock className="w-3 h-3" style={{ color: 'var(--text-secondary)' }} />
+              <label className="text-[10px] font-medium" style={{ color: 'var(--text-secondary)' }}>
+                Max Speech Duration
+              </label>
+              <span
+                className="text-[10px] font-mono px-1.5 py-0.5 rounded"
+                style={{ background: 'var(--bg-tertiary)', color: 'var(--text-primary)' }}
+              >
+                {Math.floor(draftMaxSpeech / 60_000) > 0 ? `${Math.floor(draftMaxSpeech / 60_000)}m ` : ''}{((draftMaxSpeech % 60_000) / 1000)}s
+              </span>
+            </div>
+            <input
+              type="range"
+              min={10_000}
+              max={300_000}
+              step={5_000}
+              value={draftMaxSpeech}
+              onChange={(e) => setDraftMaxSpeech(parseInt(e.target.value))}
+              className="w-full h-1.5 rounded-lg appearance-none cursor-pointer"
+              style={{
+                background: `linear-gradient(to right, var(--accent) 0%, var(--accent) ${((draftMaxSpeech - 10_000) / 290_000) * 100}%, var(--bg-tertiary) ${((draftMaxSpeech - 10_000) / 290_000) * 100}%, var(--bg-tertiary) 100%)`,
+                accentColor: 'var(--accent)',
+              }}
+            />
+            <div className="flex justify-between text-[9px]" style={{ color: 'var(--text-secondary)' }}>
+              <span>10s</span>
+              <span>5 min</span>
+            </div>
+            <p className="text-[10px] leading-relaxed" style={{ color: 'var(--text-secondary)' }}>
+              Maximum continuous speech before the mic auto-segments. Increase this if you dictate long passages and get cut off. Default is 30 seconds.
             </p>
           </div>
 

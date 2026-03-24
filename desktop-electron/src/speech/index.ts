@@ -63,6 +63,7 @@ interface SttConfig {
   wakePhrase: string;
   smartMatching: boolean;
   silenceTimeoutMs: number;
+  maxSpeechMs: number;
   customCommands?: VoiceCommand[];
   builtinOverrides?: Record<string, BuiltinOverride>;
 }
@@ -199,6 +200,7 @@ interface SpeechState {
   modelSize: string;
   smartMatching: boolean;
   silenceTimeoutMs: number;
+  maxSpeechMs: number;
   whisperBin: string | null;
   audioCapture: AudioCapture | null;
   speaking: boolean;
@@ -220,6 +222,7 @@ const state: SpeechState = {
   modelSize: cfg.modelSize || 'small',
   smartMatching: cfg.smartMatching !== false, // default true
   silenceTimeoutMs: cfg.silenceTimeoutMs || 800,
+  maxSpeechMs: cfg.maxSpeechMs || 30_000,
   whisperBin: null,
   audioCapture: null,
   vad: null,
@@ -409,6 +412,7 @@ export function registerSpeechHandlers() {
     wakePhrase: state.wakePhrase,
     smartMatching: state.smartMatching,
     silenceTimeoutMs: state.silenceTimeoutMs,
+    maxSpeechMs: state.maxSpeechMs,
   }));
 
   ipcMain.handle('stt_set_silence_timeout', (_e, args: { silenceTimeoutMs: number }) => {
@@ -416,6 +420,13 @@ export function registerSpeechHandlers() {
     state.silenceTimeoutMs = ms;
     saveConfig({ silenceTimeoutMs: ms });
     console.error(`[STT] Silence timeout set to: ${ms}ms`);
+  });
+
+  ipcMain.handle('stt_set_max_speech', (_e, args: { maxSpeechMs: number }) => {
+    const ms = Math.max(10_000, Math.min(300_000, args.maxSpeechMs));
+    state.maxSpeechMs = ms;
+    saveConfig({ maxSpeechMs: ms });
+    console.error(`[STT] Max speech duration set to: ${ms}ms`);
   });
 
   ipcMain.handle('stt_set_smart_matching', (_e, args: { enabled: boolean; openaiApiKey?: string }) => {
@@ -510,7 +521,7 @@ export function registerSpeechHandlers() {
       const cloudApiKey = cloudProvider === 'groq' ? state.groqApiKey : cloudProvider === 'openai' ? state.openaiApiKey : '';
 
       if (!state.audioCapture) {
-        const vad = new VadProcessor(16000, state.silenceTimeoutMs);
+        const vad = new VadProcessor(16000, state.silenceTimeoutMs, state.maxSpeechMs);
         state.vad = vad;
         const whisperBin = state.whisperBin;
         const tinyModel = tinyPath;
@@ -534,7 +545,7 @@ export function registerSpeechHandlers() {
       }
 
       if (!state.audioCapture) {
-        const vad = new VadProcessor(16000, state.silenceTimeoutMs);
+        const vad = new VadProcessor(16000, state.silenceTimeoutMs, state.maxSpeechMs);
         state.vad = vad;
 
         state.audioCapture = new AudioCapture((samples) => {
@@ -553,7 +564,7 @@ export function registerSpeechHandlers() {
       }
 
       if (!state.audioCapture) {
-        const vad = new VadProcessor(16000, state.silenceTimeoutMs);
+        const vad = new VadProcessor(16000, state.silenceTimeoutMs, state.maxSpeechMs);
         state.vad = vad;
         const whisperBin = state.whisperBin;
         const mPath = p;

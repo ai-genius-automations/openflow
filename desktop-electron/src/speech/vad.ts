@@ -5,7 +5,7 @@
 
 const FRAME_MS = 30;
 const MIN_SPEECH_MS = 300;
-const MAX_SPEECH_MS = 30_000;
+const DEFAULT_MAX_SPEECH_MS = 30_000;
 const DEFAULT_SILENCE_TIMEOUT_MS = 800;
 const CALIBRATION_FRAMES = 66; // ~2 seconds
 
@@ -17,6 +17,7 @@ export type VadEvent =
 export class VadProcessor {
   private frameSize: number;
   private silenceTimeoutMs: number;
+  private maxSpeechMs: number;
   private energyThreshold = 0.01;
   private calibrationEnergies: number[] = [];
   private calibrated = false;
@@ -27,14 +28,20 @@ export class VadProcessor {
   private pending: number[] = [];
   private muteUntil = 0; // timestamp — ignore audio until this time (prevents beep pickup)
 
-  constructor(sampleRate: number, silenceTimeoutMs?: number) {
+  constructor(sampleRate: number, silenceTimeoutMs?: number, maxSpeechMs?: number) {
     this.frameSize = Math.floor((sampleRate * FRAME_MS) / 1000);
     this.silenceTimeoutMs = silenceTimeoutMs ?? DEFAULT_SILENCE_TIMEOUT_MS;
+    this.maxSpeechMs = maxSpeechMs ?? DEFAULT_MAX_SPEECH_MS;
   }
 
   /** Update the silence timeout dynamically (in milliseconds). */
   setSilenceTimeout(ms: number) {
     this.silenceTimeoutMs = ms;
+  }
+
+  /** Update the max speech duration dynamically (in milliseconds). */
+  setMaxSpeechMs(ms: number) {
+    this.maxSpeechMs = ms;
   }
 
   /** Suppress VAD for the given duration (ms). Used to ignore audio cue beeps. */
@@ -99,7 +106,7 @@ export class VadProcessor {
       for (let i = 0; i < frame.length; i++) this.buffer.push(frame[i]);
 
       const speechMs = this.speechFrames * FRAME_MS;
-      if (speechMs >= MAX_SPEECH_MS) {
+      if (speechMs >= this.maxSpeechMs) {
         const utterance = this.finishUtterance();
         if (utterance) events.push({ type: 'utterance', samples: utterance });
         events.push({ type: 'speaking-changed', speaking: false });
