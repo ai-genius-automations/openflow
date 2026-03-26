@@ -8,7 +8,9 @@
 #   1. Checks if ruflo is installed locally (~/.octoally/ruflo/)
 #   2. Compares local version to npm registry (fast ~200ms check)
 #   3. Only downloads if there's a newer version (or no local install)
-#   4. Runs the local copy
+#   4. On update: does a CLEAN install (rm node_modules) so transitive deps
+#      like agentdb don't get stale, and nukes old npx caches
+#   5. Runs the local copy
 
 set -euo pipefail
 
@@ -19,7 +21,8 @@ if [ ! -d "$RUFLO_DIR" ] && [ -d "$HOME/.hivecommand/ruflo" ]; then
 fi
 RUFLO_BIN="$RUFLO_DIR/node_modules/.bin/ruflo"
 RUFLO_PKG="$RUFLO_DIR/package.json"
-REGISTRY_URL="https://registry.npmjs.org/ruflo/latest"
+RUFLO_VERSION="${RUFLO_VERSION:-latest}"
+REGISTRY_URL="https://registry.npmjs.org/ruflo/${RUFLO_VERSION}"
 
 # Get locally installed version (empty if not installed)
 get_local_version() {
@@ -36,13 +39,35 @@ get_remote_version() {
     | node -e "let d='';process.stdin.on('data',c=>d+=c);process.stdin.on('end',()=>{try{process.stdout.write(JSON.parse(d).version)}catch{}})" 2>/dev/null || echo ""
 }
 
-# Install or update ruflo
+# Nuke stale npx caches for @claude-flow/cli to prevent transitive dep rot.
+# npx caches are opaque hash dirs that npm never cleans up, and stale transitive
+# deps (like agentdb 2.x) can cause session-end hangs.
+clean_npx_caches() {
+  local cleaned=0
+  for dir in "$HOME/.npm/_npx"/*/; do
+    [ -d "$dir" ] || continue
+    # Only target claude-flow caches
+    if [ -f "${dir}node_modules/@claude-flow/cli/package.json" ]; then
+      rm -rf "$dir" 2>/dev/null && cleaned=$((cleaned + 1))
+    fi
+  done
+  if [ "$cleaned" -gt 0 ]; then
+    echo "[ruflo-run] Cleaned $cleaned stale npx cache(s)" >&2
+  fi
+}
+
+# Install or update ruflo (clean install to force transitive dep re-resolution)
 install_ruflo() {
   mkdir -p "$RUFLO_DIR"
   if [ ! -f "$RUFLO_PKG" ]; then
     (cd "$RUFLO_DIR" && npm init -y --silent >/dev/null 2>&1)
   fi
-  (cd "$RUFLO_DIR" && npm install ruflo@latest --save --silent 2>&1 | tail -1) >&2
+  # Remove node_modules to force full re-resolution of ALL deps including
+  # transitive ones like agentdb. Without this, npm may keep stale sub-deps.
+  rm -rf "$RUFLO_DIR/node_modules" 2>/dev/null || true
+  (cd "$RUFLO_DIR" && npm install "ruflo@${RUFLO_VERSION}" --save --silent 2>&1 | tail -1) >&2
+  # Also nuke npx caches so MCP servers pick up the fresh deps too
+  clean_npx_caches
 }
 
 # Main

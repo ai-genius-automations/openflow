@@ -462,16 +462,22 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
                 <button
                   onClick={handleReinit}
                   disabled={reinitPending || reinitMutation.isPending}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
-                  style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.3)' }}
-                  title="RuFlo is active — click to reinitialize"
+                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors${rufloData?.rufloUpdateAvailable ? ' animate-pulse' : ''}`}
+                  style={rufloData?.rufloUpdateAvailable
+                    ? { background: '#f59e0b20', color: '#f59e0b', border: '1px solid #f59e0b44' }
+                    : { background: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.3)' }
+                  }
+                  title={rufloData?.rufloUpdateAvailable
+                    ? `RuFlo update: v${rufloData.rufloVersion} → v${rufloData.rufloLatestVersion} — click to update`
+                    : 'RuFlo is active — click to reinitialize'
+                  }
                 >
                   {reinitPending || reinitMutation.isPending ? (
                     <Loader2 className="w-3 h-3 animate-spin" />
                   ) : (
                     <Cpu className="w-3 h-3" />
                   )}
-                  RuFlo Active
+                  {rufloData?.rufloUpdateAvailable ? 'RuFlo Update' : 'RuFlo Active'}
                 </button>
               ) : (
                 <span

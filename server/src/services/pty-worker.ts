@@ -23,7 +23,17 @@ const execFileAsync = promisify(execFile);
  *  production mode doesn't leak into user terminals / Claude Code / dev servers. */
 function sessionEnv(): Record<string, string> {
   const { NODE_ENV, ...rest } = process.env;
-  return { ...rest, TERM: 'xterm-256color', OCTOALLY_SESSION: '1', HIVECOMMAND_SESSION: '1', HEADLESS_WORKERS_DISABLED: '1' };
+  return {
+    ...rest,
+    TERM: 'xterm-256color',
+    OCTOALLY_SESSION: '1',
+    HIVECOMMAND_SESSION: '1',
+    HEADLESS_WORKERS_DISABLED: '1',
+    // Skip ruflo-run.sh update check during session spawns — the ruflo-install
+    // endpoint already handles updates. Without this, every spawn triggers a
+    // registry check and potentially a full npm install (30s+), causing hangs.
+    RUFLO_SKIP_UPDATE_CHECK: '1',
+  };
 }
 
 const TIMING_LOG = '/tmp/octoally-timing.log';

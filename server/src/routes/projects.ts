@@ -11,6 +11,73 @@ import { promisify } from 'util';
 
 const execFileAsync = promisify(execFile);
 
+/* ================================================================
+   Cached ruflo version check — avoids per-request registry calls
+   ================================================================ */
+
+interface RufloVersionCache {
+  local: string;
+  remote: string;
+  checkedAt: number;
+}
+
+let _rufloVersionCache: RufloVersionCache | null = null;
+const RUFLO_VERSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function getRufloLocalVersion(): string {
+  const rufloDir = join(process.env.RUFLO_HOME || join(homedir(), '.octoally', 'ruflo'));
+  const pkgPath = join(rufloDir, 'node_modules', 'ruflo', 'package.json');
+  // Fall back to legacy path
+  const legacyPath = join(homedir(), '.hivecommand', 'ruflo', 'node_modules', 'ruflo', 'package.json');
+  for (const p of [pkgPath, legacyPath]) {
+    try {
+      if (existsSync(p)) {
+        const pkg = JSON.parse(readFileSync(p, 'utf-8'));
+        return pkg.version || '';
+      }
+    } catch { /* ignore */ }
+  }
+  return '';
+}
+
+async function getRufloVersionInfo(): Promise<{ local: string; remote: string; updateAvailable: boolean }> {
+  const now = Date.now();
+  if (_rufloVersionCache && (now - _rufloVersionCache.checkedAt) < RUFLO_VERSION_CACHE_TTL) {
+    return {
+      local: _rufloVersionCache.local,
+      remote: _rufloVersionCache.remote,
+      updateAvailable: _rufloVersionCache.remote !== '' && _rufloVersionCache.local !== '' && _rufloVersionCache.remote !== _rufloVersionCache.local,
+    };
+  }
+
+  const local = getRufloLocalVersion();
+  let remote = '';
+  try {
+    const resp = await fetch('https://registry.npmjs.org/ruflo/latest', {
+      signal: AbortSignal.timeout(5000),
+    });
+    if (resp.ok) {
+      const data = await resp.json() as { version?: string };
+      remote = data.version || '';
+    }
+  } catch { /* network issue — use cached or skip */ }
+
+  // Only update cache if we got a remote version (don't cache failures)
+  if (remote) {
+    _rufloVersionCache = { local, remote, checkedAt: now };
+  } else if (_rufloVersionCache) {
+    // Refresh local version but keep cached remote
+    _rufloVersionCache.local = local;
+    remote = _rufloVersionCache.remote;
+  }
+
+  return {
+    local,
+    remote,
+    updateAvailable: remote !== '' && local !== '' && remote !== local,
+  };
+}
+
 /**
  * Migrate hook paths in .claude/settings.json to absolute paths.
  *
@@ -253,6 +320,9 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const db = getDb();
     const projects = db.prepare('SELECT id, path FROM projects').all() as { id: string; path: string }[];
 
+    // Check ruflo version (cached, non-blocking registry check)
+    const versionInfo = await getRufloVersionInfo();
+
     // Check all projects in parallel using file existence only (no npx calls - too slow)
     // Current SONA patch version — bump when patch-sona.sh changes
     const CURRENT_SONA_PATCH_VERSION = 2;
@@ -283,7 +353,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
         return [p.id, {
           installed,
-          version: null,
+          version: versionInfo.local || null,
           memoryInitialized: hasMemory,
           codexReady,
           sonaPatchVersion,
@@ -297,7 +367,13 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
       statuses[id] = status;
     }
 
-    return { statuses, currentSonaPatchVersion: CURRENT_SONA_PATCH_VERSION };
+    return {
+      statuses,
+      currentSonaPatchVersion: CURRENT_SONA_PATCH_VERSION,
+      rufloVersion: versionInfo.local || null,
+      rufloLatestVersion: versionInfo.remote || null,
+      rufloUpdateAvailable: versionInfo.updateAvailable,
+    };
   });
 
   // Check for existing config files that ruflo init would overwrite
@@ -492,6 +568,33 @@ npx @claude-flow/cli memory search \\
     // Patch relative/broken hook paths to absolute after ruflo writes settings
     const migrated = migrateSettingsHookPaths(project.path);
     if (migrated) output.push(migrated);
+
+    // Rewrite stale `npx @claude-flow/cli@latest` references in hook scripts
+    // to the local ruflo binary. The npx call downloads on every invocation,
+    // causing session stop hooks to hang for 10+ seconds.
+    const localRuflo = join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo');
+    if (existsSync(localRuflo)) {
+      const hookFiles = [
+        join(project.path, '.claude', 'hooks', 'session-end.sh'),
+        join(project.path, '.claude', 'helpers', 'pre-commit'),
+        join(project.path, '.claude', 'helpers', 'post-commit'),
+      ];
+      for (const file of hookFiles) {
+        try {
+          if (!existsSync(file)) continue;
+          const content = readFileSync(file, 'utf-8');
+          if (!content.includes('npx @claude-flow/cli')) continue;
+          const fixed = content.replace(
+            /npx\s+@claude-flow\/cli@\S+/g,
+            `"${localRuflo}"`
+          );
+          if (fixed !== content) {
+            writeFileSync(file, fixed, 'utf-8');
+            output.push(`[hooks] Migrated ${file.split('/').pop()} to local ruflo`);
+          }
+        } catch { /* non-fatal */ }
+      }
+    }
 
     // Patch SONA trajectory learning into ruflo hooks (version-gated, idempotent)
     if (HAS_SONA_PATCH) {

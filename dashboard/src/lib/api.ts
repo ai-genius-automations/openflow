@@ -333,6 +333,9 @@ export interface RufloProjectStatus {
 
 export interface RufloStatusResponse {
   statuses: Record<string, RufloProjectStatus>;
+  rufloVersion?: string | null;
+  rufloLatestVersion?: string | null;
+  rufloUpdateAvailable?: boolean;
 }
 
 export interface DevcortexProjectStatus {

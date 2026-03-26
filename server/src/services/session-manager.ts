@@ -1795,6 +1795,45 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
   }
 }
 
+/* ================================================================
+   Stale pending session watchdog
+   ================================================================ */
+
+/** Max time (ms) a session can stay in "pending" before being auto-failed */
+const PENDING_SESSION_TIMEOUT_MS = 90_000; // 90 seconds
+let _pendingWatchdogTimer: ReturnType<typeof setInterval> | null = null;
+
+/**
+ * Start a periodic watchdog that auto-fails sessions stuck in "pending" status.
+ * Sessions stay pending until the WebSocket connects and triggers the spawn.
+ * If that never happens (e.g. browser tab closed, network issue, or spawn hang),
+ * the session stays pending forever — blocking the user from knowing it failed.
+ */
+export function startPendingSessionWatchdog(): void {
+  if (_pendingWatchdogTimer) return;
+  _pendingWatchdogTimer = setInterval(() => {
+    try {
+      const db = getDb();
+      const stale = db.prepare(`
+        SELECT id FROM sessions
+        WHERE status = 'pending'
+        AND created_at < datetime('now', '-' || ? || ' seconds')
+      `).all(Math.floor(PENDING_SESSION_TIMEOUT_MS / 1000)) as { id: string }[];
+
+      for (const { id } of stale) {
+        // Clean up any pending spawn record
+        pendingSpawns.delete(id);
+        db.prepare(`
+          UPDATE sessions SET status = 'failed', exit_code = -1,
+            completed_at = datetime('now'), updated_at = datetime('now')
+          WHERE id = ? AND status = 'pending'
+        `).run(id);
+        console.log(`[WATCHDOG] Auto-failed stale pending session ${id}`);
+      }
+    } catch { /* non-fatal */ }
+  }, 30_000); // check every 30s
+}
+
 /**
  * Auto-reconnect all detached sessions (tmux or dtach) after server startup.
  * Now non-blocking: forks a worker per session in parallel.

@@ -7,7 +7,7 @@ import fastifyStatic from '@fastify/static';
 import fastifyWebsocket from '@fastify/websocket';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { initDb } from './db/index.js';
+import { initDb, getDb } from './db/index.js';
 import { eventRoutes } from './routes/events.js';
 import { sessionRoutes } from './routes/sessions.js';
 import { taskRoutes } from './routes/tasks.js';
@@ -24,9 +24,11 @@ import {
   type FastifyTRPCPluginOptions,
 } from '@trpc/server/adapters/fastify';
 import type { AppRouter } from './trpc/router.js';
-import { killAllSessions, cleanupStaleRunningSessions, autoReconnectDetachedSessions, getReconnectStatus } from './services/session-manager.js';
+import { killAllSessions, cleanupStaleRunningSessions, autoReconnectDetachedSessions, getReconnectStatus, startPendingSessionWatchdog } from './services/session-manager.js';
 import { config } from './config.js';
-import { appendFileSync, writeFileSync } from 'fs';
+import { appendFileSync, writeFileSync, readdirSync, existsSync, readFileSync, rmSync } from 'fs';
+import { join } from 'path';
+import { homedir } from 'os';
 const tlog = (s: string) => { try { appendFileSync('/tmp/octoally-timing.log', `[${new Date().toISOString()}] ${s}\n`); } catch {} };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -56,6 +58,28 @@ async function start() {
   // Clear timing log for fresh run
   try { writeFileSync('/tmp/octoally-timing.log', ''); } catch {}
 
+  // Clean npx caches that contain stale agentdb v2 (causes session-end hangs).
+  // Only deletes caches where agentdb is a standalone dep (v2 era) — once a user
+  // gets a fresh cache with agentdb bundled inside ruflo, this is a no-op.
+  try {
+    const npxDir = join(homedir(), '.npm', '_npx');
+    if (existsSync(npxDir)) {
+      let cleaned = 0;
+      for (const entry of readdirSync(npxDir)) {
+        const cacheDir = join(npxDir, entry);
+        const cfPkg = join(cacheDir, 'node_modules', '@claude-flow', 'cli', 'package.json');
+        if (!existsSync(cfPkg)) continue;
+        // Only nuke if this cache has a standalone agentdb (the stale v2 dep).
+        // Fresh caches bundle agentdb inside ruflo — no standalone agentdb dir.
+        const staleAgentdb = join(cacheDir, 'node_modules', 'agentdb');
+        if (existsSync(staleAgentdb)) {
+          try { rmSync(cacheDir, { recursive: true, force: true }); cleaned++; } catch {}
+        }
+      }
+      if (cleaned > 0) console.log(`  Cleaned ${cleaned} stale @claude-flow/cli npx cache(s) with agentdb v2`);
+    }
+  } catch { /* non-fatal */ }
+
   // Initialize database, load projects from user config, and clean up orphaned sessions
   let t = Date.now();
   initDb();
@@ -63,6 +87,45 @@ async function start() {
   t = Date.now();
   await initProjects();
   tlog(`[STARTUP] initProjects: ${Date.now() - t}ms`);
+  // Migrate stale `npx @claude-flow/cli@latest` references in project hooks
+  // to the local ruflo binary. This is the #1 cause of hivemind session hangs:
+  // the stop hook calls npx which downloads the entire package on every session end.
+  // Targeted one-time fix — only rewrites files that contain the broken pattern.
+  try {
+    const db = getDb();
+    const projects = db.prepare('SELECT path FROM projects').all() as { path: string }[];
+    const localRuflo = join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo');
+    const hasLocalRuflo = existsSync(localRuflo);
+    let migrated = 0;
+
+    if (hasLocalRuflo) {
+      for (const { path: projectPath } of projects) {
+        // Check all hook scripts that may reference the stale npx command
+        const hookFiles = [
+          join(projectPath, '.claude', 'hooks', 'session-end.sh'),
+          join(projectPath, '.claude', 'helpers', 'pre-commit'),
+          join(projectPath, '.claude', 'helpers', 'post-commit'),
+        ];
+        for (const file of hookFiles) {
+          try {
+            if (!existsSync(file)) continue;
+            const content = readFileSync(file, 'utf-8');
+            if (!content.includes('npx @claude-flow/cli')) continue;
+            const fixed = content.replace(
+              /npx\s+@claude-flow\/cli@\S+/g,
+              `"${localRuflo}"`
+            );
+            if (fixed !== content) {
+              writeFileSync(file, fixed, 'utf-8');
+              migrated++;
+            }
+          } catch { /* non-fatal per file */ }
+        }
+      }
+    }
+    if (migrated > 0) console.log(`  Migrated ${migrated} hook file(s) from npx @claude-flow/cli to local ruflo`);
+  } catch { /* non-fatal */ }
+
   t = Date.now();
   await cleanupStaleRunningSessions();
   tlog(`[STARTUP] cleanupStale: ${Date.now() - t}ms`);
@@ -71,6 +134,9 @@ async function start() {
   autoReconnectDetachedSessions().catch((err) => {
     console.error('Auto-reconnect failed:', err);
   });
+  // Watchdog: auto-fail sessions stuck in "pending" for >90s (e.g. browser closed
+  // before WebSocket connected, or spawn command hangs on registry check/npm install)
+  startPendingSessionWatchdog();
 
   // Plugins
   await app.register(cors, {

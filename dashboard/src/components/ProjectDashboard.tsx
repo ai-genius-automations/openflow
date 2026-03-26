@@ -1673,7 +1673,17 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                           + Codex
                         </button>
                       )}
-                      {cfStatus?.sonaPatchOutdated && (
+                      {cfStatusData?.rufloUpdateAvailable && cfStatus?.installed && (
+                        <button
+                          className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap animate-pulse"
+                          style={{ background: '#f59e0b20', color: '#f59e0b', border: '1px solid #f59e0b44' }}
+                          title={`RuFlo update available: v${cfStatusData.rufloVersion} → v${cfStatusData.rufloLatestVersion} — click to re-init`}
+                          onClick={(e) => { e.stopPropagation(); handleRufloInstall(project.id); }}
+                        >
+                          Update
+                        </button>
+                      )}
+                      {cfStatus?.sonaPatchOutdated && !cfStatusData?.rufloUpdateAvailable && (
                         <button
                           className="shrink-0 ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap animate-pulse"
                           style={{ background: '#f59e0b20', color: '#f59e0b', border: '1px solid #f59e0b44' }}

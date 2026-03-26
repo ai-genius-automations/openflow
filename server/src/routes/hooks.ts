@@ -8,17 +8,44 @@ const LEGACY_HOOK_MARKER = '# hivecommand-events-hook';
 
 /**
  * Build the inline hook command that POSTs tool use events to OctoAlly.
- * Claude Code passes hook data as JSON on stdin — we read it, extract fields,
- * and POST to the OctoAlly events API. Uses jq for lightweight JSON processing.
- * Falls back to sending raw stdin if jq is not available.
+ * Claude Code passes hook data as JSON on stdin. Capture it to a temp file,
+ * then hand off a bounded background Node process so the hook itself exits fast.
  */
 function buildHookCommand(projectPath: string): string {
   const port = config.port || 42010;
   const url = `http://localhost:${port}/api/events`;
-  // Read stdin JSON, extract tool_name and tool_input, build POST payload
-  // jq constructs the payload; curl sends it. All in one pipeline, backgrounded.
   const escapedPath = projectPath.replace(/"/g, '\\"');
-  return `INPUT=$(cat); echo "$INPUT" | jq -c '{type:"tool_use",tool_name:.tool_name,session_id:.session_id,project_path:"${escapedPath}",data:{tool:.tool_name,session:.session_id,file_path:(.tool_input.file_path // .tool_input.path // ""),command:(.tool_input.command // ""),pattern:(.tool_input.pattern // ""),description:(.tool_input.description // "")}}' 2>/dev/null | curl -s -X POST "${url}" -H "Content-Type: application/json" -d @- > /dev/null 2>&1 &  ${OCTOALLY_HOOK_MARKER}`;
+  const nodeScript = [
+    "const fs=require('fs');",
+    "const http=require('http');",
+    "const https=require('https');",
+    "try{",
+    "const raw=fs.readFileSync(process.argv[1],'utf8');",
+    "const input=raw?JSON.parse(raw):{};",
+    "const body=JSON.stringify({",
+    "type:'tool_use',",
+    "tool_name:input.tool_name||'',",
+    "session_id:input.session_id||'',",
+    "project_path:process.argv[2],",
+    "data:{",
+    "tool:input.tool_name||'',",
+    "session:input.session_id||'',",
+    "file_path:input.tool_input?.file_path||input.tool_input?.path||'',",
+    "command:input.tool_input?.command||'',",
+    "pattern:input.tool_input?.pattern||'',",
+    "description:input.tool_input?.description||''",
+    "}",
+    "});",
+    "const target=new URL(process.argv[3]);",
+    "const mod=target.protocol==='https:'?https:http;",
+    "const req=mod.request(target,{method:'POST',headers:{'Content-Type':'application/json','Content-Length':Buffer.byteLength(body)},timeout:1500},res=>res.resume());",
+    "req.on('error',()=>{});",
+    "req.on('timeout',()=>req.destroy());",
+    "req.end(body);",
+    "}catch{}",
+  ].join('');
+  const escapedScript = nodeScript.replace(/["\\$`]/g, '\\$&');
+  return `TMP=$(mktemp "\${TMPDIR:-/tmp}/octoally-hook.XXXXXX"); cat > "$TMP"; (node -e "${escapedScript}" "$TMP" "${escapedPath}" "${url}" >/dev/null 2>&1 || true; rm -f "$TMP") </dev/null >/dev/null 2>&1 & ${OCTOALLY_HOOK_MARKER}`;
 }
 
 interface ClaudeSettings {
@@ -66,8 +93,10 @@ function installHook(settings: ClaudeSettings, projectPath: string): ClaudeSetti
   if (!settings.hooks) settings.hooks = {};
   if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
 
-  // Don't double-install
-  if (isHookInstalled(settings)) return settings;
+  // Replace any existing OctoAlly/HiveCommand hook so installs upgrade stale commands.
+  settings = uninstallHook(settings);
+  if (!settings.hooks) settings.hooks = {};
+  if (!settings.hooks.PostToolUse) settings.hooks.PostToolUse = [];
 
   settings.hooks.PostToolUse.push({
     hooks: [
