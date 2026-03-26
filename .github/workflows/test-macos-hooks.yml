@@ -6,6 +6,10 @@ on:
         description: 'OctoAlly version to test (e.g. 1.0.54 or latest)'
         required: false
         default: 'latest'
+      ruflo_version:
+        description: 'Ruflo version to test (e.g. 3.5.42 or latest)'
+        required: false
+        default: 'latest'
 
 jobs:
   test-macos:
@@ -29,18 +33,14 @@ jobs:
 
       - name: Install ruflo
         run: |
-          echo "=== Installing ruflo via ruflo-run.sh ==="
-          if [ -f ~/.octoally/ruflo-run.sh ]; then
-            bash ~/.octoally/ruflo-run.sh --version 2>&1 || true
-          elif [ -f ~/octoally/scripts/ruflo-run.sh ]; then
-            bash ~/octoally/scripts/ruflo-run.sh --version 2>&1 || true
-          else
-            echo "No ruflo-run.sh found, installing manually"
-            mkdir -p ~/.octoally/ruflo
-            cd ~/.octoally/ruflo
-            npm init -y --silent 2>/dev/null
-            npm install ruflo@latest --save 2>&1 | tail -5
-          fi
+          RUFLO_VER="${{ github.event.inputs.ruflo_version }}"
+          echo "=== Installing ruflo@${RUFLO_VER} ==="
+          mkdir -p ~/.octoally/ruflo
+          cd ~/.octoally/ruflo
+          npm init -y --silent 2>/dev/null
+          npm install "ruflo@${RUFLO_VER}" --save 2>&1 | tail -5
+          echo "=== Installed ruflo version ==="
+          grep '"version"' node_modules/ruflo/package.json | head -1
           echo "=== Ruflo binary check ==="
           ls -la ~/.octoally/ruflo/node_modules/.bin/ruflo 2>/dev/null || echo "NOT FOUND"
 
