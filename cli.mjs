@@ -118,6 +118,19 @@ function runInstallOrUpdate(version) {
     } catch {}
   }
 
+  // Final fallback: kill whatever is listening on port 42010.
+  // On macOS, the old server process can survive PID file + CLI stop.
+  try {
+    const lsofOut = execSync('lsof -ti:42010 2>/dev/null || true', { encoding: 'utf8' }).trim();
+    if (lsofOut) {
+      for (const pid of lsofOut.split('\n').filter(Boolean)) {
+        execSync(`kill ${pid} 2>/dev/null || true`, { stdio: 'pipe' });
+      }
+      // Wait briefly for port to free
+      execSync('sleep 1', { stdio: 'pipe' });
+    }
+  } catch {}
+
   // Extract
   execSync(`mkdir -p "${extractDir}" && tar xzf "${tmpFile}" -C "${extractDir}"`, { stdio: "pipe" });
   execSync(`rm -f "${tmpFile}"`, { stdio: "pipe" });
