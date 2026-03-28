@@ -103,6 +103,16 @@ export function initDb(): void {
   // Codex support: track which CLI (claude or codex) launched the session
   try { db.exec("ALTER TABLE sessions ADD COLUMN cli_type TEXT DEFAULT 'claude'"); } catch {}
 
+  // OpenClaw session bridge columns (T005)
+  try { db.exec("ALTER TABLE sessions ADD COLUMN requested_by TEXT DEFAULT 'ui'"); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN controller_kind TEXT'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN controller_meta_json TEXT'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN lock_key TEXT'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN write_capable INTEGER DEFAULT 1'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN prompt_context TEXT'); } catch {}
+  try { db.exec('ALTER TABLE sessions ADD COLUMN applied_project_prompts INTEGER DEFAULT 0'); } catch {}
+  try { db.exec('CREATE INDEX IF NOT EXISTS idx_sessions_lock_key ON sessions(lock_key)'); } catch {}
+
   // Note: orphaned process cleanup is handled by cleanupStaleRunningSessions()
   // which is called after initDb() in index.ts — it kills processes AND marks DB records.
 

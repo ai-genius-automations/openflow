@@ -6,6 +6,7 @@ import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { AgentGuideModal } from './AgentGuide';
 import { ConfirmModal } from './ConfirmModal';
 import { SessionMicButton } from './SessionMicButton';
+import { OpenClawIntegrationPanel } from './OpenClawIntegrationPanel';
 
 interface SessionLauncherProps {
   project: Project;
@@ -276,6 +277,7 @@ function TaskModal({
 export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }: SessionLauncherProps) {
   const [webUrl, setWebUrl] = useState('');
   const [showOpenClaw, setShowOpenClaw] = useState(false);
+  const [showDeveloperFallback, setShowDeveloperFallback] = useState(false);
   const [launchMode, setLaunchMode] = useState<LaunchMode>(null);
   const queryClient = useQueryClient();
 
@@ -428,8 +430,11 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
     queryKey: ['sessions'],
     queryFn: () => api.sessions.list(),
   });
-  const activeSessions = (sessionsData?.sessions || []).filter(
-    (s) => s.project_id === project.id && (s.status === 'running' || s.status === 'detached')
+  const projectSessions = (sessionsData?.sessions || []).filter(
+    (session) => session.project_id === project.id,
+  );
+  const activeSessions = projectSessions.filter(
+    (session) => session.status === 'running' || session.status === 'detached' || session.status === 'pending',
   );
 
   const btnBase = "flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 border whitespace-nowrap min-w-0";
@@ -743,10 +748,22 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
           />
         )}
 
-        {/* OpenClaw modal */}
+        {/* OpenClaw integration panel */}
         {showOpenClaw && (
-          <AgentGuideModal
+          <OpenClawIntegrationPanel
+            project={project}
+            sessions={projectSessions}
             onClose={() => setShowOpenClaw(false)}
+            onDeveloperFallback={() => {
+              setShowOpenClaw(false);
+              setShowDeveloperFallback(true);
+            }}
+          />
+        )}
+
+        {showDeveloperFallback && (
+          <AgentGuideModal
+            onClose={() => setShowDeveloperFallback(false)}
             projectName={project.name}
             projectPath={project.path}
             additionalInstructions={instructions}

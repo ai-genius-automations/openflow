@@ -10,6 +10,8 @@ import { SessionLauncher } from './SessionLauncher';
 import { WebPageView } from './WebPageView';
 import { api } from '../lib/api';
 import { CloseTabModal } from './CloseTabModal';
+import { SessionBadges } from './SessionBadges';
+import { SessionMetadataDetails } from './SessionMetadataDetails';
 
 interface ProjectViewProps {
   projectId: string;
@@ -755,6 +757,13 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
   const showSubTabs = activeMode === 'terminal' || activeMode === 'explorer';
 
   const gridMode = showAllTerminals && !showLauncher && (terminalInstances.length + hiddenSessions.length) >= 2;
+  const activeSession = activeTerminalId ? sessionLookup.get(activeTerminalId) ?? null : null;
+  const showSessionDetail =
+    activeMode === 'terminal' &&
+    !showLauncher &&
+    !showAllTerminals &&
+    !activeWebPageId &&
+    Boolean(activeSession);
 
   // Persist grid preferences
   useEffect(() => {
@@ -898,6 +907,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                 {/* Terminal session sub-tabs */}
                 {terminalInstances.map((inst) => {
                   const isActive = !showLauncher && !showAllTerminals && !activeWebPageId && inst.id === activeTerminalId;
+                  const session = sessionLookup.get(inst.id);
                   return (
                     <div
                       key={inst.id}
@@ -941,6 +951,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                           );
                         })()}
                         <span className="truncate">{inst.label}</span>
+                        {session && <SessionBadges session={session} compact />}
                       </button>
                       <button
                         onClick={(e) => {
@@ -1064,6 +1075,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                                   >
                                     {typeLabel}
                                   </span>
+                                  <SessionBadges session={s} compact />
                                   <span className="truncate">{s.task === 'Terminal' ? 'Interactive shell' : s.task?.slice(0, 50)}</span>
                                 </div>
                                 <div className="truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
@@ -1219,6 +1231,38 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                 </button>
               </>
             )}
+          </div>
+        )}
+
+        {showSessionDetail && activeSession && (
+          <div
+            className="shrink-0 border-b px-3 py-3"
+            style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {activeSession.task === 'Terminal'
+                      ? terminalInstances.find((instance) => instance.id === activeSession.id)?.label || 'Terminal'
+                      : activeSession.task}
+                  </span>
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+                  >
+                    {activeSession.status}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] font-mono" style={{ color: 'var(--text-secondary)' }}>
+                  {activeSession.id}
+                </div>
+              </div>
+              <SessionBadges session={activeSession} />
+            </div>
+            <div className="mt-3">
+              <SessionMetadataDetails session={activeSession} compact />
+            </div>
           </div>
         )}
 
@@ -1464,6 +1508,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                           <span className={`font-medium shrink-0 ${isExpanded ? 'text-sm' : 'text-xs'}`} style={{ color: 'var(--text-primary)' }}>
                             {term.label}
                           </span>
+                          {s && <SessionBadges session={s} compact />}
                           <span className={`truncate min-w-0 ml-auto ${isExpanded ? 'text-xs ml-2' : 'text-[10px]'}`} style={{ color: 'var(--text-secondary)' }}>
                             {projectSessions.find((s) => s.id === term.id)?.task || 'Terminal'}
                           </span>

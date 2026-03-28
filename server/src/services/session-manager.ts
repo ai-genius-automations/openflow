@@ -12,6 +12,8 @@ import { getSetting } from '../routes/settings.js';
 import { nanoid } from 'nanoid';
 import type { WebSocket } from 'ws';
 import { getOrCreateTracker, removeTracker, recoverFromBuffer } from './session-state.js';
+import { transitionSessionToTerminal } from './session-records.js';
+import { normalizeWorkspacePath } from './workspace-lock.js';
 
 const nodeRequire = createRequire(import.meta.url);
 const { Terminal: HeadlessTerminal } = nodeRequire('@xterm/headless') as { Terminal: any };
@@ -101,14 +103,39 @@ export interface Session {
   project_id: string | null;
   task: string;
   status: string;
+  cli_type: 'claude' | 'codex' | null;
   pid: number | null;
   claude_session_id: string | null;
+  requested_by: string | null;
+  controller_kind: string | null;
+  controller_meta_json: string | null;
+  lock_key: string | null;
+  write_capable: number | null;
+  prompt_context: string | null;
+  applied_project_prompts: number | null;
   started_at: string | null;
   completed_at: string | null;
   exit_code: number | null;
   created_at: string;
   updated_at: string;
   terminal_cols: number | null;
+}
+
+export interface SessionControllerMetadata {
+  kind: string;
+  skill_name: string;
+  channel_id?: string | null;
+  message_id?: string | null;
+  request_id: string;
+}
+
+export interface CreateSessionMetadata {
+  requestedBy?: 'ui' | 'openclaw' | 'api';
+  controller?: SessionControllerMetadata | null;
+  lockKey?: string | null;
+  writeCapable?: boolean;
+  promptContext?: string | null;
+  appliedProjectPrompts?: boolean;
 }
 
 interface ActiveSession {
@@ -725,10 +752,12 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
 
         const db = getDb();
         const status = msg.exitCode === 0 ? 'completed' : 'failed';
-        db.prepare(`
-          UPDATE sessions SET status = ?, exit_code = ?, completed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ? AND status NOT IN ('detached', 'cancelled', 'released')
-        `).run(status, msg.exitCode, sessionId);
+        transitionSessionToTerminal(db, {
+          sessionId,
+          status,
+          exitCode: msg.exitCode,
+          extraBlockedStatuses: ['detached', 'released'],
+        });
 
         insertEvent({
           session_id: sessionId,
@@ -787,10 +816,12 @@ function wireWorker(sessionId: string, worker: ChildProcess, projectPath?: strin
           WHERE id = ? AND status = 'running'
         `).run(sessionId);
       } else {
-        db.prepare(`
-          UPDATE sessions SET status = 'failed', exit_code = ?, completed_at = datetime('now'), updated_at = datetime('now')
-          WHERE id = ? AND status NOT IN ('detached', 'cancelled', 'completed', 'released')
-        `).run(code ?? -1, sessionId);
+        transitionSessionToTerminal(db, {
+          sessionId,
+          status: 'failed',
+          exitCode: code ?? -1,
+          extraBlockedStatuses: ['detached', 'released'],
+        });
       }
 
       for (const ws of active.subscribers) {
@@ -853,14 +884,52 @@ function forkWorker(): Promise<ChildProcess> {
    Session lifecycle
    ================================================================ */
 
-export function createSession(_projectPath: string, task: string, projectId?: string, cliType?: 'claude' | 'codex'): Session {
+export function createSession(
+  _projectPath: string,
+  task: string,
+  projectId?: string,
+  cliType: 'claude' | 'codex' = 'claude',
+  metadata: CreateSessionMetadata = {},
+): Session {
   const db = getDb();
   const id = nanoid(12);
+  const requestedBy = metadata.requestedBy ?? 'ui';
+  const controllerKind = metadata.controller?.kind ?? null;
+  const controllerMetaJson = metadata.controller ? JSON.stringify(metadata.controller) : null;
+  const lockKey = metadata.lockKey ?? null;
+  const writeCapable = metadata.writeCapable === false ? 0 : 1;
+  const promptContext = metadata.promptContext ?? null;
+  const appliedProjectPrompts = metadata.appliedProjectPrompts ? 1 : 0;
 
   db.prepare(`
-    INSERT INTO sessions (id, project_id, task, status, cli_type)
-    VALUES (?, ?, ?, 'pending', ?)
-  `).run(id, projectId || null, task, cliType || 'claude');
+    INSERT INTO sessions (
+      id,
+      project_id,
+      task,
+      status,
+      cli_type,
+      requested_by,
+      controller_kind,
+      controller_meta_json,
+      lock_key,
+      write_capable,
+      prompt_context,
+      applied_project_prompts
+    )
+    VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    projectId || null,
+    task,
+    cliType,
+    requestedBy,
+    controllerKind,
+    controllerMetaJson,
+    lockKey,
+    writeCapable,
+    promptContext,
+    appliedProjectPrompts,
+  );
 
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
@@ -1460,13 +1529,14 @@ export async function killSession(sessionId: string): Promise<boolean> {
 
   // 8. Update DB immediately
   const db = getDb();
-  const result = db.prepare(`
-    UPDATE sessions SET status = 'cancelled', completed_at = datetime('now'), updated_at = datetime('now')
-    WHERE id = ? AND status IN ('running', 'pending', 'detached')
-  `).run(sessionId);
+  const result = transitionSessionToTerminal(db, {
+    sessionId,
+    status: 'cancelled',
+    extraBlockedStatuses: ['released'],
+  });
 
-  console.log(`[KILL] Session ${sessionId} killed (db_updated=${result.changes > 0})`);
-  return !!active || result.changes > 0;
+  console.log(`[KILL] Session ${sessionId} killed (db_updated=${result})`);
+  return !!active || result;
 }
 
 /**
@@ -2135,7 +2205,10 @@ export async function adoptDtachSession(socketPath: string, projectId?: string):
     task = 'Adopted external session';
   }
 
-  const session = createSession(projectPath, task, projectId || undefined);
+  const session = createSession(projectPath, task, projectId || undefined, 'claude', {
+    lockKey: projectPath ? normalizeWorkspacePath(projectPath) : null,
+    writeCapable: true,
+  });
   const db = getDb();
 
   // Lazy adopt: register as pending spawn so the tmux wrapper is created

@@ -1,0 +1,200 @@
+version: 1
+milestone: M0
+title: OctoAlly ↔ OpenClaw native handoff hardening
+tracks:
+  - id: M0-A
+    name: Database and storage foundation
+    owner: backend
+    dependencies: []
+    tasks:
+      - id: M0-A1
+        title: Extend SQLite schema for openclaw_connections/openclaw_runs/openclaw_run_events
+        files:
+          - server/src/db/index.ts
+        outputs:
+          - new tables and indexes
+          - sessions.controller_kind
+          - sessions.controller_run_id
+      - id: M0-A2
+        title: Implement OpenClaw store layer
+        files:
+          - server/src/services/openclaw-store.ts
+        outputs:
+          - CRUD for connections
+          - CRUD for runs
+          - event append/list helpers
+          - session linking helper
+
+  - id: M0-B
+    name: OpenClaw adapter and run manager
+    owner: backend
+    dependencies: [M0-A]
+    tasks:
+      - id: M0-B1
+        title: Add OpenClaw adapter interface and LocalCliAdapter
+        files:
+          - server/src/services/openclaw-adapter.ts
+          - server/src/services/openclaw-local-cli-adapter.ts
+        outputs:
+          - testConnection()
+          - buildLaunchPreview()
+          - launchRun()
+          - cancelRun()
+          - resolveGatewayUrl()
+          - resolveCanvasUrl()
+      - id: M0-B2
+        title: Add OpenClaw run manager with child-process supervision
+        files:
+          - server/src/services/openclaw-run-manager.ts
+        outputs:
+          - active child map
+          - stdout/stderr streaming into DB
+          - startup orphan reconciliation
+          - cancel escalation SIGINT/SIGTERM/SIGKILL
+
+  - id: M0-C
+    name: Session correlation and agent API update
+    owner: backend
+    dependencies: [M0-A]
+    tasks:
+      - id: M0-C1
+        title: Extend session creation payload with controller metadata
+        files:
+          - server/src/routes/sessions.ts
+          - server/src/services/session-manager.ts
+        outputs:
+          - controller_kind accepted
+          - controller_run_id accepted
+          - metadata persisted
+      - id: M0-C2
+        title: Link OpenClaw runs to sessions on create
+        files:
+          - server/src/routes/sessions.ts
+          - server/src/services/openclaw-store.ts
+        outputs:
+          - octoally_session_id set on openclaw_runs
+          - linked_session event emitted
+      - id: M0-C3
+        title: Update self-describing agent capabilities payload
+        files:
+          - server/src/routes/agent.ts
+        outputs:
+          - controller metadata documented in capabilities response
+
+  - id: M0-D
+    name: OpenClaw REST routes
+    owner: backend
+    dependencies: [M0-A, M0-B, M0-C]
+    tasks:
+      - id: M0-D1
+        title: Add /api/openclaw connection endpoints
+        files:
+          - server/src/routes/openclaw.ts
+          - server/src/index.ts
+        outputs:
+          - list/create/update/delete/test connection routes
+      - id: M0-D2
+        title: Add /api/openclaw preview/run/event/cancel/export endpoints
+        files:
+          - server/src/routes/openclaw.ts
+        outputs:
+          - preview route
+          - run create/list/get route
+          - run events route
+          - cancel route
+          - export route
+
+  - id: M0-E
+    name: Frontend API and project create fix
+    owner: frontend
+    dependencies: [M0-D]
+    tasks:
+      - id: M0-E1
+        title: Add openclaw API client methods
+        files:
+          - dashboard/src/lib/api.ts
+        outputs:
+          - api.openclaw namespace
+      - id: M0-E2
+        title: Fix project creation to persist ruflo_prompt/openclaw_prompt
+        files:
+          - dashboard/src/components/ProjectDashboard.tsx
+        outputs:
+          - prompts sent on create mutation
+
+  - id: M0-F
+    name: Launch modal and run visibility UI
+    owner: frontend
+    dependencies: [M0-E]
+    tasks:
+      - id: M0-F1
+        title: Replace guide-first flow with OpenClawLaunchModal
+        files:
+          - dashboard/src/components/SessionLauncher.tsx
+          - dashboard/src/components/OpenClawLaunchModal.tsx
+        outputs:
+          - objective input
+          - connection selection
+          - prompt preview
+          - launch action
+          - copy fallback action
+      - id: M0-F2
+        title: Add connection settings UI
+        files:
+          - dashboard/src/components/OpenClawConnectionSettings.tsx
+        outputs:
+          - create/update/test/delete profile UI
+      - id: M0-F3
+        title: Add OpenClaw run list/detail UI
+        files:
+          - dashboard/src/components/OpenClawRunList.tsx
+          - dashboard/src/components/OpenClawRunDetail.tsx
+          - dashboard/src/components/SessionLauncher.tsx
+        outputs:
+          - recent runs section
+          - run detail drawer or panel
+          - open linked session action
+          - open gateway/canvas action
+
+  - id: M0-G
+    name: QA and regression harness
+    owner: qa
+    dependencies: [M0-D, M0-F]
+    tasks:
+      - id: M0-G1
+        title: Add backend tests for schema, routes, and correlation
+        outputs:
+          - migration coverage
+          - run create/list/cancel coverage
+          - session correlation coverage
+      - id: M0-G2
+        title: Add frontend smoke tests
+        outputs:
+          - project create prompt persistence
+          - launch modal render
+          - recent run list render
+      - id: M0-G3
+        title: Execute manual QA matrix
+        outputs:
+          - local OpenClaw binary present path
+          - missing binary path
+          - gateway down path
+          - successful launch path
+          - fallback copy path
+
+merge_order:
+  - M0-A
+  - M0-C
+  - M0-B
+  - M0-D
+  - M0-E
+  - M0-F
+  - M0-G
+
+done_when:
+  - project creation persists ruflo_prompt and openclaw_prompt
+  - native OpenClaw launch works on localhost happy path
+  - fallback handoff export still works
+  - openclaw runs are persisted and visible in UI
+  - linked OctoAlly session correlation works
+  - no existing RuFlo/terminal launch flow regresses

@@ -1,10 +1,13 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { useQuery } from '@tanstack/react-query';
 import { Monitor, FolderTree, Code2, Radio, GitBranch, Plus, X } from 'lucide-react';
 import { Terminal } from './Terminal';
 import { FileExplorer } from './FileExplorer';
 import { EventStream } from './EventStream';
 import { GitPanel } from './GitPanel';
 import { api } from '../lib/api';
+import { SessionBadges } from './SessionBadges';
+import { SessionMetadataDetails } from './SessionMetadataDetails';
 
 interface SessionViewProps {
   sessionId: string;
@@ -82,6 +85,11 @@ const sidebarButtons = [
 ] as const;
 
 export function SessionView({ sessionId, projectPath, projectId: _projectId, onExit }: SessionViewProps) {
+  const { data: sessionData } = useQuery({
+    queryKey: ['session', sessionId],
+    queryFn: () => api.sessions.get(sessionId),
+  });
+
   // Initialize from persisted state or defaults
   const [initialized] = useState(() => {
     const saved = loadPersistedState(sessionId);
@@ -395,6 +403,36 @@ export function SessionView({ sessionId, projectPath, projectId: _projectId, onE
             >
               <Plus className="w-3.5 h-3.5" />
             </button>
+          </div>
+        )}
+
+        {sessionData?.session && (
+          <div
+            className="shrink-0 border-b px-3 py-3"
+            style={{ borderColor: 'var(--border)', background: 'var(--bg-secondary)' }}
+          >
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div className="min-w-0">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    {sessionData.session.task}
+                  </span>
+                  <span
+                    className="rounded-full px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider"
+                    style={{ background: 'var(--bg-tertiary)', color: 'var(--text-secondary)' }}
+                  >
+                    {sessionData.session.status}
+                  </span>
+                </div>
+                <div className="mt-1 text-[11px] font-mono" style={{ color: 'var(--text-secondary)' }}>
+                  {sessionData.session.id}
+                </div>
+              </div>
+              <SessionBadges session={sessionData.session} />
+            </div>
+            <div className="mt-3">
+              <SessionMetadataDetails session={sessionData.session} compact />
+            </div>
           </div>
         )}
 

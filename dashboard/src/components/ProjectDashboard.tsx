@@ -5,6 +5,10 @@ import { api, type Project } from '../lib/api';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import {
+  buildProjectCreatePayload,
+  buildProjectUpdatePayload,
+} from './projectWritePayloads';
+import {
   Plus,
   FolderOpen,
   ChevronRight,
@@ -213,7 +217,14 @@ function ProjectForm({
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api.projects.create({ name, path, description, default_web_url: defaultWebUrl || undefined }),
+      api.projects.create(buildProjectCreatePayload({
+        name,
+        path,
+        description,
+        defaultWebUrl,
+        rufloPrompt,
+        openclawPrompt,
+      })),
     onSuccess: async (data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
@@ -244,17 +255,15 @@ function ProjectForm({
   });
 
   const updateMutation = useMutation({
-    mutationFn: () => {
-      const fields: Record<string, string | null | undefined> = {};
-      if (name !== project!.name) fields.name = name;
-      if (description !== (project!.description || '')) fields.description = description;
-      if (defaultWebUrl !== (project!.default_web_url || '')) fields.default_web_url = defaultWebUrl || null;
-      if (rufloPrompt !== (project!.ruflo_prompt || ''))
-        fields.ruflo_prompt = rufloPrompt || null;
-      if (openclawPrompt !== (project!.openclaw_prompt || ''))
-        fields.openclaw_prompt = openclawPrompt || null;
-      return api.projects.update(project!.id, fields);
-    },
+    mutationFn: () =>
+      api.projects.update(project!.id, buildProjectUpdatePayload(project!, {
+        name,
+        path: project!.path,
+        description,
+        defaultWebUrl,
+        rufloPrompt,
+        openclawPrompt,
+      })),
     onSuccess: async () => {
       const savePath = project!.path;
       try {
@@ -458,6 +467,30 @@ function ProjectForm({
               />
             </div>
 
+            {/* Session prompts */}
+            <div className="grid grid-cols-2 gap-4">
+              <div className="flex flex-col">
+                <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>RuFlo Session Prompt</label>
+                <textarea
+                  value={rufloPrompt}
+                  onChange={(e) => setClaudeFlowPrompt(e.target.value)}
+                  placeholder="System instructions prepended to every task for this project..."
+                  className={`${inputClass} resize-y flex-1`}
+                  style={{ ...inputStyle, minHeight: '80px' }}
+                />
+              </div>
+              <div className="flex flex-col">
+                <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>OpenClaw Session Prompt</label>
+                <textarea
+                  value={openclawPrompt}
+                  onChange={(e) => setOpenclawPrompt(e.target.value)}
+                  placeholder="Additional instructions included when running via OpenClaw..."
+                  className={`${inputClass} resize-y flex-1`}
+                  style={{ ...inputStyle, minHeight: '80px' }}
+                />
+              </div>
+            </div>
+
             {/* GitHub Repository */}
             <div
               className="rounded-lg border p-4 flex flex-col gap-3"
@@ -643,30 +676,6 @@ function ProjectForm({
             {/* ===== Edit mode: Prompts + Files section ===== */}
             {mode === 'edit' && (
               <div className="flex flex-col gap-4 pt-2" style={{ borderTop: '1px solid var(--border)' }}>
-                {/* Row 1: Session prompts — 2 columns */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="flex flex-col">
-                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>RuFlo Session Prompt</label>
-                    <textarea
-                      value={rufloPrompt}
-                      onChange={(e) => setClaudeFlowPrompt(e.target.value)}
-                      placeholder="System instructions prepended to every task for this project..."
-                      className={`${inputClass} resize-y flex-1`}
-                      style={{ ...inputStyle, minHeight: '80px' }}
-                    />
-                  </div>
-                  <div className="flex flex-col">
-                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>OpenClaw Session Prompt</label>
-                    <textarea
-                      value={openclawPrompt}
-                      onChange={(e) => setOpenclawPrompt(e.target.value)}
-                      placeholder="Additional instructions included when running via OpenClaw..."
-                      className={`${inputClass} resize-y flex-1`}
-                      style={{ ...inputStyle, minHeight: '80px' }}
-                    />
-                  </div>
-                </div>
-
                 {/* Row 2: CLAUDE.md + AGENTS.md — side by side */}
                 <div className="grid grid-cols-2 gap-4">
                   {/* CLAUDE.md */}

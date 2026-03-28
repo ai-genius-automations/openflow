@@ -6,9 +6,30 @@ const { SerializeAddon } = require('@xterm/addon-serialize') as { SerializeAddon
 import { spawn } from 'child_process';
 import { platform } from 'os';
 import * as sessionManager from '../services/session-manager.js';
+import { composeSessionTask } from '../services/prompt-composer.js';
 import { RESIZE_MARKER, registerPendingSpawn, getSessionTmuxServer } from '../services/session-manager.js';
 import { getTracker } from '../services/session-state.js';
 import { getDb } from '../db/index.js';
+import type { SessionControllerMetadata } from '../services/session-manager.js';
+import { createSessionRecord } from '../services/session-records.js';
+
+type PromptContext = 'default' | 'openclaw';
+type RequestedBy = 'ui' | 'openclaw' | 'api';
+type LockBehavior = 'reject' | 'ignore';
+
+interface SessionProjectPrompts {
+  id: string;
+  ruflo_prompt: string | null;
+  openclaw_prompt: string | null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isNullableString(value: unknown): value is string | null | undefined {
+  return value === undefined || value === null || typeof value === 'string';
+}
 
 export const sessionRoutes: FastifyPluginAsync = async (app) => {
   // List sessions
@@ -63,35 +84,184 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
       mode?: 'hivemind' | 'terminal' | 'agent';
       agent_type?: string;
       cli_type?: 'claude' | 'codex';
+      apply_project_prompts?: boolean;
+      prompt_context?: PromptContext;
+      requested_by?: RequestedBy;
+      controller?: SessionControllerMetadata | null;
+      lock_behavior?: LockBehavior;
     };
   }>('/sessions', async (req, reply) => {
-    const { project_path, task, project_id, mode, agent_type, cli_type } = req.body as any;
+    const {
+      project_path,
+      task,
+      project_id,
+      mode,
+      agent_type,
+      cli_type,
+      apply_project_prompts,
+      prompt_context,
+      requested_by,
+      controller: rawController,
+      lock_behavior,
+    } = req.body as Record<string, unknown>;
     const cliType = cli_type === 'codex' ? 'codex' : 'claude';
 
-    if (mode === 'terminal') {
-      if (!project_path) {
-        return reply.status(400).send({ error: 'project_path is required' });
+    if (!isNonEmptyString(project_path)) {
+      return reply.status(400).send({ error: 'project_path is required' });
+    }
+
+    if (apply_project_prompts !== undefined && typeof apply_project_prompts !== 'boolean') {
+      return reply.status(400).send({ error: 'apply_project_prompts must be a boolean' });
+    }
+
+    if (prompt_context !== undefined && prompt_context !== 'default' && prompt_context !== 'openclaw') {
+      return reply.status(400).send({ error: 'prompt_context must be one of: default, openclaw' });
+    }
+
+    if (requested_by !== undefined && requested_by !== 'ui' && requested_by !== 'openclaw' && requested_by !== 'api') {
+      return reply.status(400).send({ error: 'requested_by must be one of: ui, openclaw, api' });
+    }
+
+    if (lock_behavior !== undefined && lock_behavior !== 'reject' && lock_behavior !== 'ignore') {
+      return reply.status(400).send({ error: 'lock_behavior must be one of: reject, ignore' });
+    }
+
+    let controller: SessionControllerMetadata | null = null;
+    if (rawController !== undefined && rawController !== null) {
+      if (typeof rawController !== 'object' || Array.isArray(rawController)) {
+        return reply.status(400).send({ error: 'controller must be an object or null' });
       }
-      const session = sessionManager.createSession(project_path, 'Terminal', project_id);
-      registerPendingSpawn(session.id, { projectPath: project_path, task: 'Terminal', mode: 'terminal', projectId: project_id });
+
+      const { kind, skill_name, channel_id, message_id, request_id } = rawController as Record<string, unknown>;
+      if (!isNonEmptyString(kind)) {
+        return reply.status(400).send({ error: 'controller.kind is required' });
+      }
+      if (!isNonEmptyString(skill_name)) {
+        return reply.status(400).send({ error: 'controller.skill_name is required' });
+      }
+      if (!isNonEmptyString(request_id)) {
+        return reply.status(400).send({ error: 'controller.request_id is required' });
+      }
+      if (!isNullableString(channel_id)) {
+        return reply.status(400).send({ error: 'controller.channel_id must be a string or null' });
+      }
+      if (!isNullableString(message_id)) {
+        return reply.status(400).send({ error: 'controller.message_id must be a string or null' });
+      }
+
+      controller = {
+        kind,
+        skill_name,
+        channel_id: channel_id ?? null,
+        message_id: message_id ?? null,
+        request_id,
+      };
+    }
+
+    const projectPath = project_path;
+    const requestedBy: RequestedBy = requested_by === 'openclaw' || requested_by === 'api' ? requested_by : 'ui';
+    const promptContext: PromptContext = prompt_context === 'openclaw' ? 'openclaw' : 'default';
+    const applyProjectPrompts = apply_project_prompts === true;
+    const writeCapable = mode !== 'terminal';
+    const lockBehavior: LockBehavior = lock_behavior === 'ignore' ? 'ignore' : 'reject';
+
+    if (mode === 'terminal') {
+      const sessionResult = createSessionRecord(getDb(), {
+        projectPath,
+        projectId: typeof project_id === 'string' ? project_id : undefined,
+        task: 'Terminal',
+        cliType,
+        requestedBy,
+        controller,
+        lockBehavior,
+        writeCapable,
+        promptContext,
+        appliedProjectPrompts: false,
+      });
+      if (sessionResult.ok === false) {
+        return reply.status(409).send(sessionResult.conflict);
+      }
+      const session = sessionResult.session;
+      registerPendingSpawn(session.id, { projectPath, task: 'Terminal', mode: 'terminal', projectId: typeof project_id === 'string' ? project_id : undefined, cliType });
       return { ok: true, session };
     }
 
-    if (!project_path || !task) {
+    if (!isNonEmptyString(task)) {
       return reply.status(400).send({ error: 'project_path and task are required' });
     }
 
+    let project: SessionProjectPrompts | undefined;
+    if (applyProjectPrompts) {
+      const db = getDb();
+      if (typeof project_id === 'string' && project_id.trim()) {
+        project = db.prepare(`
+          SELECT id, ruflo_prompt, openclaw_prompt
+          FROM projects
+          WHERE id = ?
+        `).get(project_id) as SessionProjectPrompts | undefined;
+      }
+
+      if (!project) {
+        project = db.prepare(`
+          SELECT id, ruflo_prompt, openclaw_prompt
+          FROM projects
+          WHERE path = ?
+        `).get(projectPath) as SessionProjectPrompts | undefined;
+      }
+
+      if (!project) {
+        return reply.status(404).send({ error: 'Project not found for prompt composition' });
+      }
+    }
+
+    const finalTask = applyProjectPrompts
+      ? composeSessionTask(task, project?.ruflo_prompt ?? undefined, project?.openclaw_prompt ?? undefined, promptContext)
+      : task;
+    const projectId = typeof project_id === 'string' && project_id.trim()
+      ? project_id
+      : project?.id;
+
     if (mode === 'agent') {
-      if (!agent_type) {
+      if (!isNonEmptyString(agent_type)) {
         return reply.status(400).send({ error: 'agent_type is required for agent mode' });
       }
-      const session = sessionManager.createSession(project_path, `Agent (${agent_type}): ${task}`, project_id, cliType);
-      registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'agent', agentType: agent_type, projectId: project_id, cliType });
+      const sessionResult = createSessionRecord(getDb(), {
+        projectPath,
+        projectId,
+        task: `Agent (${agent_type}): ${finalTask}`,
+        cliType,
+        requestedBy,
+        controller,
+        lockBehavior,
+        writeCapable,
+        promptContext,
+        appliedProjectPrompts: applyProjectPrompts,
+      });
+      if (sessionResult.ok === false) {
+        return reply.status(409).send(sessionResult.conflict);
+      }
+      const session = sessionResult.session;
+      registerPendingSpawn(session.id, { projectPath, task: finalTask, mode: 'agent', agentType: agent_type, projectId, cliType });
       return { ok: true, session };
     }
 
-    const session = sessionManager.createSession(project_path, task, project_id, cliType);
-    registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'hivemind', projectId: project_id, cliType });
+    const sessionResult = createSessionRecord(getDb(), {
+      projectPath,
+      projectId,
+      task: finalTask,
+      cliType,
+      requestedBy,
+      controller,
+      lockBehavior,
+      writeCapable,
+      promptContext,
+      appliedProjectPrompts: applyProjectPrompts,
+    });
+    if (sessionResult.ok === false) {
+      return reply.status(409).send(sessionResult.conflict);
+    }
+    const session = sessionResult.session;
+    registerPendingSpawn(session.id, { projectPath, task: finalTask, mode: 'hivemind', projectId, cliType });
 
     return { ok: true, session };
   });
