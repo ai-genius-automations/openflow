@@ -42,7 +42,16 @@ function discoverNodeDirs(): string[] {
   const fnmDir = join(home, '.local', 'share', 'fnm', 'node-versions');
   if (existsSync(fnmDir)) {
     try {
-      const versions = readdirSync(fnmDir).filter((d) => d.startsWith('v')).sort();
+      const versions = readdirSync(fnmDir)
+        .filter((d) => d.startsWith('v'))
+        .sort((a, b) => {
+          const pa = a.slice(1).split('.').map(Number);
+          const pb = b.slice(1).split('.').map(Number);
+          for (let i = 0; i < 3; i++) {
+            if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+          }
+          return 0;
+        });
       if (versions.length > 0) {
         dirs.push(join(fnmDir, versions[versions.length - 1], 'installation', 'bin'));
       }

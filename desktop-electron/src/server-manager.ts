@@ -108,7 +108,16 @@ function buildNodeAwarePath(): string {
   const fnmDir = path.join(home, '.local', 'share', 'fnm', 'node-versions');
   if (fs.existsSync(fnmDir)) {
     try {
-      const versions = fs.readdirSync(fnmDir).filter((d) => d.startsWith('v')).sort();
+      const versions = fs.readdirSync(fnmDir)
+        .filter((d) => d.startsWith('v'))
+        .sort((a, b) => {
+          const pa = a.slice(1).split('.').map(Number);
+          const pb = b.slice(1).split('.').map(Number);
+          for (let i = 0; i < 3; i++) {
+            if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) - (pb[i] || 0);
+          }
+          return 0;
+        });
       if (versions.length > 0) {
         const latest = versions[versions.length - 1];
         extraDirs.push(path.join(fnmDir, latest, 'installation', 'bin'));
