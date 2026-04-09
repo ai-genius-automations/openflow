@@ -1,7 +1,7 @@
 import { fork, execFile, execFileSync, spawn, type ChildProcess } from 'child_process';
 import { promisify } from 'util';
 import { createRequire } from 'module';
-import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, unlinkSync, appendFileSync } from 'fs';
+import { readFile, readdirSync, readFileSync, writeFileSync as fsWriteFileSync, existsSync, appendFileSync } from 'fs';
 import { join, dirname } from 'path';
 import { homedir } from 'os';
 import { fileURLToPath } from 'url';
@@ -116,9 +116,9 @@ interface ActiveSession {
   subscribers: Set<WebSocket>;
   seq: number; // monotonic counter for pty_output rows
   cols: number; // last known terminal column width
-  task: string; // 'Terminal' for plain shells, task description for hivemind
+  task: string; // 'Terminal' for plain shells, task description for session
   cliType?: 'claude' | 'codex'; // CLI type — Codex needs special capture handling
-  externalSocket?: string; // external hivemind dtach socket (adopted sessions)
+  externalSocket?: string; // external dtach socket (adopted sessions)
   replayBuffer: string[];  // ring buffer of recent output chunks for instant replay
   replayBytes: number;     // total bytes in replayBuffer
   wsPendingData: string | null; // batched WS output waiting to be sent
@@ -131,7 +131,7 @@ const activeSessions = new Map<string, ActiveSession>();
 interface PendingSpawn {
   projectPath: string;
   task: string;
-  mode: 'hivemind' | 'terminal' | 'adopt' | 'agent';
+  mode: 'session' | 'terminal' | 'adopt' | 'agent';
   agentType?: string;
   projectId?: string;
   socketPath?: string;  // for adopt mode
@@ -865,7 +865,7 @@ export function createSession(_projectPath: string, task: string, projectId?: st
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
 
-export async function spawnClaudeFlow(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+export async function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
   const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
 
   const worker = await forkWorker();
@@ -874,9 +874,15 @@ export async function spawnClaudeFlow(sessionId: string, projectPath: string, ta
   active.task = task;
   active.cliType = cliType;
 
-  const rufloCommand = cliType === 'codex'
-    ? getSetting('hivemind_codex_command') || getSetting('ruflo_command')
-    : getSetting('hivemind_claude_command') || getSetting('ruflo_command');
+  let sessionCommand = cliType === 'codex'
+    ? getSetting('session_codex_command')
+    : getSetting('session_claude_command');
+
+  // Check per-project skip_permissions flag
+  const proj = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as { skip_permissions: number } | undefined;
+  if (proj?.skip_permissions && cliType === 'claude' && !sessionCommand.includes('--dangerously-skip-permissions')) {
+    sessionCommand += ' --dangerously-skip-permissions';
+  }
 
   // Tell the worker to spawn the session
   worker.send({
@@ -884,12 +890,12 @@ export async function spawnClaudeFlow(sessionId: string, projectPath: string, ta
     sessionId,
     projectPath,
     task,
-    mode: 'hivemind',
+    mode: 'session',
     cols,
     rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    rufloCommand,
+    sessionCommand,
     cliType,
   });
 
@@ -936,9 +942,15 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
   active.task = `Agent (${agentType}): ${task}`;
   active.cliType = cliType;
 
-  const rufloCommand = cliType === 'codex'
-    ? getSetting('agent_codex_command') || getSetting('ruflo_command')
-    : getSetting('agent_claude_command') || getSetting('ruflo_command');
+  let sessionCommand = cliType === 'codex'
+    ? getSetting('agent_codex_command')
+    : getSetting('agent_claude_command');
+
+  // Check per-project skip_permissions flag
+  const proj = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as { skip_permissions: number } | undefined;
+  if (proj?.skip_permissions && cliType === 'claude' && !sessionCommand.includes('--dangerously-skip-permissions')) {
+    sessionCommand += ' --dangerously-skip-permissions';
+  }
 
   worker.send({
     type: 'spawn',
@@ -951,7 +963,7 @@ export async function spawnAgent(sessionId: string, projectPath: string, task: s
     rows,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    rufloCommand,
+    sessionCommand,
     cliType,
   });
 
@@ -1021,7 +1033,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
     // Seed replay buffer for instant replay on client connect.
     // Plain terminals: render stored pipe-pane output through a HeadlessTerminal
     // + SerializeAddon to produce a clean, dimension-aware snapshot.
-    // Hivemind: fall back to tmux capture-pane (hivemind redraws on SIGWINCH).
+    // Session: fall back to tmux capture-pane (sessions redraw on SIGWINCH).
     const seedStart = Date.now();
     let seeded = false;
     if (session.task === 'Terminal' && !opts?.skipPipePaneReplay) {
@@ -1040,7 +1052,7 @@ export async function reconnectSession(sessionId: string, opts?: { skipPipePaneR
       } catch (err) { tlog(`[RECONNECT] ${sessionId}: serialize-seed error: ${err}`); }
     }
     if (!seeded && config.useTmux && hasTmuxSession) {
-      // Fallback: capture-pane (for hivemind or when DB has no data)
+      // Fallback: capture-pane (for sessions or when DB has no data)
       try {
         const name = tmuxSessionName(sessionId);
         const { stdout: rawStdout } = await execFileAsync('tmux', [
@@ -1287,57 +1299,6 @@ function pidAlive(pid: number): boolean {
 }
 
 /**
- * Kill an orphaned ruflo daemon and its headless worker children.
- */
-function killOrphanedDaemon(workingDir: string): void {
-  const pidFile = join(workingDir, '.ruflo', 'daemon.pid');
-  if (!existsSync(pidFile)) return;
-
-  let daemonPid: number;
-  try {
-    daemonPid = parseInt(readFileSync(pidFile, 'utf-8').trim(), 10);
-    if (isNaN(daemonPid) || !pidAlive(daemonPid)) {
-      try { unlinkSync(pidFile); } catch { /* ignore */ }
-      return;
-    }
-  } catch {
-    return;
-  }
-
-  try {
-    const cmdline = readFileSync(`/proc/${daemonPid}/cmdline`, 'utf-8');
-    if (!cmdline.includes('cli.js') || !cmdline.includes('daemon')) {
-      return;
-    }
-  } catch {
-    return;
-  }
-
-  console.log(`  Killing orphaned ruflo daemon PID ${daemonPid} in ${workingDir}`);
-
-  try {
-    const pgrepOut = execFileSync('pgrep', ['-P', String(daemonPid)], { encoding: 'utf8' });
-    const childPids = pgrepOut.trim().split('\n').filter(Boolean).map(Number);
-    for (const childPid of childPids) {
-      try {
-        const childCmdline = readFileSync(`/proc/${childPid}/comm`, 'utf-8').trim();
-        if (childCmdline === 'claude') {
-          process.kill(childPid, 'SIGKILL');
-        }
-      } catch { /* child already dead */ }
-    }
-  } catch { /* no children or pgrep failed */ }
-
-  try { process.kill(daemonPid, 'SIGTERM'); } catch { /* already dead */ }
-  setTimeout(() => {
-    if (pidAlive(daemonPid)) {
-      try { process.kill(daemonPid, 'SIGKILL'); } catch { /* dead */ }
-    }
-    try { unlinkSync(pidFile); } catch { /* ignore */ }
-  }, 1000);
-}
-
-/**
  * Recursively collect all descendant PIDs of a given PID via /proc.
  */
 function getDescendantPids(pid: number): number[] {
@@ -1436,18 +1397,7 @@ export async function killSession(sessionId: string): Promise<boolean> {
     }).catch(() => { /* fuser failed */ });
   }
 
-  // 6. Kill orphaned ruflo daemon for this session's project
-  try {
-    const sess = getDb().prepare('SELECT project_id FROM sessions WHERE id = ?').get(sessionId) as { project_id: string | null } | undefined;
-    if (sess?.project_id) {
-      const proj = getDb().prepare('SELECT path FROM projects WHERE id = ?').get(sess.project_id) as { path: string } | undefined;
-      if (proj?.path) {
-        killOrphanedDaemon(proj.path);
-      }
-    }
-  } catch { /* ignore */ }
-
-  // 7. Fallback: kill by DB PID if no active session (e.g. server restarted)
+  // 6. Fallback: kill by DB PID if no active session (e.g. server restarted)
   if (!active) {
     try {
       const session = getDb().prepare('SELECT pid FROM sessions WHERE id = ?').get(sessionId) as { pid: number | null } | undefined;
@@ -1625,7 +1575,7 @@ export function killAllSessions(): void {
 // an OctoAlly tmux PTY, which incorrectly killed: (1) adopted external sessions
 // whose claude runs on the real terminal's PTY, and (2) user-launched claude
 // sessions in their own terminals. Per-session cleanup in cleanupStaleRunningSessions
-// handles dead OctoAlly sessions individually via killOrphanedDaemon/killOrphanedProcess.
+// handles dead OctoAlly sessions individually via killOrphanedProcess.
 
 /**
  * On server startup, handle sessions from previous run.
@@ -1653,7 +1603,7 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
     let detached = 0;
     let cleaned = 0;
 
-    for (const { id, project_path } of stale) {
+    for (const { id, project_path: _project_path } of stale) {
       const inTmux = aliveTmux.has(id);
       const inDtach = aliveDtach.has(id);
       tlog(`[CLEANUP] session ${id}: tmux=${inTmux}, dtach=${inDtach}`);
@@ -1664,9 +1614,6 @@ export async function cleanupStaleRunningSessions(): Promise<void> {
         `).run(id);
         detached++;
       } else {
-        if (project_path) {
-          try { killOrphanedDaemon(project_path); } catch { /* ignore */ }
-        }
         db.prepare(`
           UPDATE sessions SET status = 'failed', exit_code = -1, completed_at = datetime('now'), updated_at = datetime('now')
           WHERE id = ?
@@ -1886,7 +1833,7 @@ export async function autoReconnectDetachedSessions(): Promise<void> {
 }
 
 /**
- * Resume a crashed session by spawning a fresh ruflo process
+ * Resume a crashed session by spawning a fresh CLI process
  * and sending `/resume <uuid>` once it's ready for input.
  */
 async function resumeCrashedSession(staleSession: Session, projectPath: string): Promise<void> {
@@ -1922,23 +1869,23 @@ async function resumeCrashedSession(staleSession: Session, projectPath: string):
     WHERE id = ?
   `).run(sessionId);
 
-  // Tell worker to spawn a hivemind session
+  // Tell worker to spawn a session
   const sessionCliType = (staleSession as any).cli_type === 'codex' ? 'codex' as const : 'claude' as const;
   active.cliType = sessionCliType;
-  const rufloCommand = sessionCliType === 'codex'
-    ? getSetting('hivemind_codex_command') || getSetting('ruflo_command')
-    : getSetting('hivemind_claude_command') || getSetting('ruflo_command');
+  const sessionCommand = sessionCliType === 'codex'
+    ? getSetting('session_codex_command')
+    : getSetting('session_claude_command');
   worker.send({
     type: 'spawn',
     sessionId,
     projectPath,
     task,
-    mode: 'hivemind',
+    mode: 'session',
     cols: 120,
     rows: 40,
     useTmux: config.useTmux,
     useDtach: config.useDtach,
-    rufloCommand,
+    sessionCommand,
     cliType: sessionCliType,
   });
 
@@ -1963,7 +1910,7 @@ async function resumeCrashedSession(staleSession: Session, projectPath: string):
 }
 
 /* ================================================================
-   External hivemind session discovery + adoption
+   External session discovery + adoption
    ================================================================ */
 
 const adoptedSockets = new Set<string>();

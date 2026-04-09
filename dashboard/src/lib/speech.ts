@@ -423,7 +423,13 @@ export async function startMic(mode: 'global' | 'push-to-talk') {
     store.setMicMode('off');
     store.setMicReady(false);
     const msg = e instanceof Error ? e.message : String(e);
-    store.setError(msg);
+    if (msg.includes('WHISPER_NOT_INSTALLED') || msg.includes('WHISPER_MODEL_MISSING')) {
+      // Whisper not installed — show download modal so user can install it
+      store.setShowDownloadModal(true, mode);
+      store.setError(null);
+    } else {
+      store.setError(msg);
+    }
     console.error('[STT] Failed to start mic:', msg);
   }
 }
@@ -446,7 +452,12 @@ export async function startWakeWord() {
     store.setWakeWordPhase(null);
     store.setMicReady(false);
     const msg = e instanceof Error ? e.message : String(e);
-    store.setError(msg);
+    if (msg.includes('WHISPER_NOT_INSTALLED') || msg.includes('WHISPER_MODEL_MISSING')) {
+      store.setShowDownloadModal(true, 'wake-word' as any);
+      store.setError(null);
+    } else {
+      store.setError(msg);
+    }
     console.error('[STT] Failed to start wake word:', msg);
   }
 }

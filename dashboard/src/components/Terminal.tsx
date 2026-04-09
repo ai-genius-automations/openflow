@@ -378,7 +378,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
         notifyServerAlive();
 
         // Force tmux reflow: resize to cols-1 then back to correct width.
-        // Only for hivemind sessions (hideCursor=true) where ruflo redraws
+        // Only for sessions (hideCursor=true) where CLI redraws
         // on SIGWINCH. Plain terminals (bash) don't redraw old output, so
         // force-resize just corrupts the tmux pane history via lossy reflow.
         // SKIP for Codex: Codex TUI redraws accumulate in tmux scrollback,
@@ -908,7 +908,7 @@ export function Terminal({ sessionId, visible = true, suspended = false, passive
                   term.reset();
                   w.send(JSON.stringify({ type: 'refresh' }));
                 } else if (hideCursorRef.current) {
-                  // Claude hivemind/agent: resize-toggle forces SIGWINCH redraw
+                  // Claude session/agent: resize-toggle forces SIGWINCH redraw
                   const cols = term.cols;
                   const rows = term.rows;
                   w.send(JSON.stringify({ type: 'resize', cols: cols - 1, rows }));

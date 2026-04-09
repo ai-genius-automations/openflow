@@ -263,7 +263,7 @@ function Dashboard() {
           } else {
             console.warn(`[STT] No project matched: "${payload.param}"`);
           }
-        } else if (target === 'terminal' || target === 'hivemind') {
+        } else if (target === 'terminal' || target === 'session') {
           if (activeTab.startsWith('project-')) {
             const numberWords: Record<string, number> = {
               one: 1, two: 2, three: 3, four: 4, five: 5,
@@ -335,7 +335,7 @@ function Dashboard() {
     saveAppState(activeTab, projectTabs);
   }, [activeTab, projectTabs]);
 
-  function handleOpenProject(projectId: string, projectName: string, quickLaunch?: 'hivemind' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') {
+  function handleOpenProject(projectId: string, projectName: string, quickLaunch?: 'session' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') {
     setProjectTabs((prev) => {
       if (prev.find((t) => t.projectId === projectId)) return prev;
       return [...prev, { projectId, projectName }];

@@ -19,7 +19,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { sessions };
   });
 
-  // Discover external hivemind dtach sessions available for adoption
+  // Discover external detached sessions available for adoption
   // (must be registered before /sessions/:id to avoid parameterized route match)
   app.get<{
     Querystring: { project_path?: string };
@@ -28,7 +28,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { sessions };
   });
 
-  // Adopt an external hivemind dtach session into OctoAlly
+  // Adopt an external detached session into OctoAlly
   app.post<{
     Body: { socket_path: string; project_id?: string };
   }>('/sessions/adopt', async (req, reply) => {
@@ -54,13 +54,13 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     return { session };
   });
 
-  // Create and start a new ruflo session (or plain terminal)
+  // Create and start a new session (or plain terminal)
   app.post<{
     Body: {
       project_path: string;
       task: string;
       project_id?: string;
-      mode?: 'hivemind' | 'terminal' | 'agent';
+      mode?: 'session' | 'terminal' | 'agent';
       agent_type?: string;
       cli_type?: 'claude' | 'codex';
     };
@@ -91,7 +91,7 @@ export const sessionRoutes: FastifyPluginAsync = async (app) => {
     }
 
     const session = sessionManager.createSession(project_path, task, project_id, cliType);
-    registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'hivemind', projectId: project_id, cliType });
+    registerPendingSpawn(session.id, { projectPath: project_path, task, mode: 'session', projectId: project_id, cliType });
 
     return { ok: true, session };
   });

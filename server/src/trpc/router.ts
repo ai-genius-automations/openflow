@@ -60,7 +60,7 @@ export const appRouter = router({
       .mutation(({ input }) => {
         const cliType = input.cliType || 'claude';
         const session = sessionManager.createSession(input.projectPath, input.task, input.projectId, cliType);
-        sessionManager.spawnClaudeFlow(session.id, input.projectPath, input.task, 180, 40, cliType);
+        sessionManager.spawnSession(session.id, input.projectPath, input.task, 180, 40, cliType);
         return session;
       }),
 

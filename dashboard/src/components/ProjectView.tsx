@@ -146,7 +146,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
     initialized?.activeMode ?? 'terminal'
   );
 
-  // Discover external hivemind sessions available for adoption (on-demand only, no polling)
+  // Discover external sessions available for adoption (on-demand only, no polling)
   const { data: discoverableData, refetch: refetchDiscoverable } = useQuery({
     queryKey: ['discoverable-sessions', projectPath],
     queryFn: () => api.sessions.discoverable(projectPath),
@@ -200,7 +200,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
   const [closeConfirm, setCloseConfirm] = useState<{
     id: string;
     label: string;
-    type: 'hivemind' | 'terminal' | 'agent';
+    type: 'session' | 'terminal' | 'agent';
   } | null>(null);
 
   // Dismiss grid view and expanded modal when the project tab loses focus
@@ -263,7 +263,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
 
       // Relabel existing instances based on actual session data.
       // This fixes tabs restored from localStorage with stale labels.
-      let hivemindCount = 0;
+      let sessionCount = 0;
       let terminalCount = 0;
       let agentCount = 0;
       const relabeled = filtered.map((t) => {
@@ -271,8 +271,8 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
         if (!session) return t; // not yet known — keep as-is
         const isTerminal = session.task === 'Terminal';
         const isAgent = session.task.startsWith('Agent (');
-        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
-        const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++hivemindCount;
+        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
+        const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++sessionCount;
         const newLabel = `${prefix} ${num}`;
         return newLabel !== t.label ? { ...t, label: newLabel } : t;
       });
@@ -283,15 +283,15 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
         if (!existingIds.has(s.id) && !closedSessionIds.current.has(s.id)) {
           const isTerminal = s.task === 'Terminal';
           const isAgent = s.task.startsWith('Agent (');
-          const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
-          const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++hivemindCount;
+          const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
+          const num = isTerminal ? ++terminalCount : isAgent ? ++agentCount : ++sessionCount;
           newTerminals.push({ id: s.id, label: `${prefix} ${num}` });
         }
       }
 
       const result = [...relabeled, ...newTerminals];
-      // Sort: hivemind first, then agent, then terminal
-      const sortOrder = (label: string) => label.startsWith('Hivemind') ? 0 : label.startsWith('Agent') ? 1 : 2;
+      // Sort: session first, then agent, then terminal
+      const sortOrder = (label: string) => label.startsWith('Session') ? 0 : label.startsWith('Agent') ? 1 : 2;
       result.sort((a, b) => {
         const diff = sortOrder(a.label) - sortOrder(b.label);
         if (diff !== 0) return diff;
@@ -316,7 +316,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
   useEffect(() => {
     if (!focusSessionId) return;
 
-    // Voice command: show all terminals/hiveminds in grid
+    // Voice command: show all terminals/sessions in grid
     if (focusSessionId === '__voice_show_all') {
       setShowAllTerminals(true);
       setExpandedTerminalId(null);
@@ -335,10 +335,10 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
       return;
     }
 
-    // Voice command / quick-launch: create new terminal, hivemind, or agent (optionally with cli type)
-    const createMatch = focusSessionId.match(/^__voice_create_(terminal|hivemind|agent)(?:_(claude|codex))?$/);
+    // Voice command / quick-launch: create new terminal, session, or agent (optionally with cli type)
+    const createMatch = focusSessionId.match(/^__voice_create_(terminal|session|agent)(?:_(claude|codex))?$/);
     if (createMatch) {
-      const type = createMatch[1] as 'terminal' | 'hivemind' | 'agent';
+      const type = createMatch[1] as 'terminal' | 'session' | 'agent';
       const cliType = (createMatch[2] as 'claude' | 'codex' | undefined) || 'claude';
       console.log(`[QuickLaunch] Creating new ${type} (${cliType})`);
       if (type === 'terminal') {
@@ -351,7 +351,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
           })
           .catch((err) => console.error(`[QuickLaunch] Failed to create terminal:`, err));
       } else {
-        const cfPrompt = (project?.ruflo_prompt ?? '').trim();
+        const cfPrompt = (project?.session_prompt ?? '').trim();
         const defaultTask = 'Start up and ask me what I want you to do and NOTHING ELSE';
         const task = cfPrompt
           ? `${defaultTask}\n\n---\nAdditional Instructions:\n${cfPrompt}`
@@ -359,14 +359,14 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
         api.sessions.create({
           project_path: projectPath,
           task,
-          mode: type === 'agent' ? 'agent' : 'hivemind',
+          mode: type === 'agent' ? 'agent' : 'session',
           agent_type: type === 'agent' ? 'coder' : undefined,
           project_id: projectId,
           cli_type: cliType,
         })
           .then((data) => {
             if (data.session?.id) {
-              handleSessionCreated(data.session.id, undefined, 'hivemind');
+              handleSessionCreated(data.session.id, undefined, 'session');
               queryClient.invalidateQueries({ queryKey: ['sessions'] });
             }
           })
@@ -376,11 +376,11 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
       return;
     }
 
-    // Voice command: close active terminal or hivemind
-    const closeMatch = focusSessionId.match(/^__voice_close_(terminal|hivemind)$/);
+    // Voice command: close active terminal or session
+    const closeMatch = focusSessionId.match(/^__voice_close_(terminal|session)$/);
     if (closeMatch) {
       const type = closeMatch[1];
-      const targetLabel = type === 'hivemind' ? 'Hivemind' : 'Terminal';
+      const targetLabel = type === 'session' ? 'Session' : 'Terminal';
       // Close the currently active session if it matches the type
       const activeInst = terminalInstances.find((t) => t.id === activeTerminalId);
       if (activeInst && activeInst.label.startsWith(targetLabel)) {
@@ -393,13 +393,13 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
       return;
     }
 
-    // Voice command: __voice_terminal_N or __voice_hivemind_N
-    const voiceMatch = focusSessionId.match(/^__voice_(terminal|hivemind)_(\d+)$/);
+    // Voice command: __voice_terminal_N or __voice_session_N
+    const voiceMatch = focusSessionId.match(/^__voice_(terminal|session)_(\d+)$/);
     if (voiceMatch) {
       const [, type, numStr] = voiceMatch;
       const num = parseInt(numStr, 10);
-      // Find the Nth terminal or hivemind by label ordering
-      const targetLabel = type === 'hivemind' ? 'Hivemind' : 'Terminal';
+      // Find the Nth terminal or session by label ordering
+      const targetLabel = type === 'session' ? 'Session' : 'Terminal';
       const matching = terminalInstances.filter((t) =>
         t.label.startsWith(targetLabel)
       );
@@ -465,11 +465,11 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
     });
   }
 
-  function handleSessionCreated(sessionId: string, _projectName?: string, mode?: 'hivemind' | 'terminal') {
+  function handleSessionCreated(sessionId: string, _projectName?: string, mode?: 'session' | 'terminal') {
     const isTerminal = mode === 'terminal';
     setTerminalInstances((prev) => {
       if (prev.some((t) => t.id === sessionId)) return prev;
-      const prefix = isTerminal ? 'Terminal' : 'Hivemind';
+      const prefix = isTerminal ? 'Terminal' : 'Session';
       const count = prev.filter(t => t.label.startsWith(prefix)).length + 1;
       return [...prev, { id: sessionId, label: `${prefix} ${count}` }];
     });
@@ -509,10 +509,10 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
         if (prev.some((t) => t.id === id)) return prev;
         const isTerminal = session.task === 'Terminal';
         const isAgent = session.task?.startsWith('Agent (');
-        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
         const count = prev.filter((t) => t.label.startsWith(prefix)).length + 1;
         const result = [...prev, { id, label: `${prefix} ${count}` }];
-        const order = (l: string) => l.startsWith('Hivemind') ? 0 : l.startsWith('Agent') ? 1 : 2;
+        const order = (l: string) => l.startsWith('Session') ? 0 : l.startsWith('Agent') ? 1 : 2;
         result.sort((a, b) => order(a.label) - order(b.label));
         return result;
       });
@@ -539,11 +539,11 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
         if (!session) continue;
         const isTerminal = session.task === 'Terminal';
         const isAgent = session.task?.startsWith('Agent (');
-        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+        const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
         const count = updated.filter((t) => t.label.startsWith(prefix)).length + 1;
         updated.push({ id, label: `${prefix} ${count}` });
       }
-      const order = (l: string) => l.startsWith('Hivemind') ? 0 : l.startsWith('Agent') ? 1 : 2;
+      const order = (l: string) => l.startsWith('Session') ? 0 : l.startsWith('Agent') ? 1 : 2;
       updated.sort((a, b) => order(a.label) - order(b.label));
       return updated;
     });
@@ -600,7 +600,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
           setActiveTerminalId(sid);
         }, 100);
       } else {
-        handleSessionCreated(sid, undefined, 'hivemind');
+        handleSessionCreated(sid, undefined, 'session');
       }
     } catch (err) {
       console.error('Failed to adopt session:', err);
@@ -664,7 +664,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
 
       const result = await api.sessions.create({
         project_path: projectPath,
-        task: 'Interactive ruflo session',
+        task: 'Interactive session',
       });
       const newId = result.session.id;
       setTerminalInstances((prev) =>
@@ -814,7 +814,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
   const hiddenAsInstances: TerminalInstance[] = hiddenSessions.map((s) => {
     const isTerminal = s.task === 'Terminal';
     const isAgent = s.task?.startsWith('Agent (');
-    const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Hivemind';
+    const prefix = isTerminal ? 'Terminal' : isAgent ? 'Agent' : 'Session';
     return { id: s.id, label: `${prefix} (hidden)` };
   });
   const allGridInstances = [...terminalInstances, ...hiddenAsInstances];
@@ -924,7 +924,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                           if (isTerminal) {
                             return <TerminalSquare className="w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />;
                           }
-                          // Show CLI icon + type icon for hivemind/agent
+                          // Show CLI icon + type icon for session/agent
                           return (
                             <>
                               {isCodex ? (
@@ -947,7 +947,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                           e.stopPropagation();
                           const type = inst.label.startsWith('Terminal') ? 'terminal'
                             : inst.label.startsWith('Agent') ? 'agent'
-                            : 'hivemind';
+                            : 'session';
                           setCloseConfirm({ id: inst.id, label: inst.label, type });
                         }}
                         className="p-0.5 rounded opacity-0 group-hover:opacity-60 hover:opacity-100 transition-opacity mr-1"
@@ -994,7 +994,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                       }
                     }}
                     className="flex items-center gap-1 px-2 rounded-md shrink-0 transition-colors text-xs"
-                    title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : 'Scan for external hivemind sessions to adopt'}
+                    title={hiddenSessions.length > 0 ? `${hiddenSessions.length} hidden session(s) — click to restore` : 'Scan for external sessions to adopt'}
                     style={{
                       height: 28,
                       color: hiddenSessions.length > 0 ? '#f59e0b' : showAdoptMenu ? 'var(--warning, #f59e0b)' : 'var(--text-secondary)',
@@ -1048,7 +1048,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                             const isAgent = s.task?.startsWith('Agent (');
                             const isCodex = s.cli_type === 'codex';
                             const cliLabel = isCodex ? 'Codex' : 'Claude';
-                            const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} ${isAgent ? 'Agent' : 'Hivemind'}`;
+                            const typeLabel = isTerminal ? 'Terminal' : `${cliLabel} ${isAgent ? 'Agent' : 'Session'}`;
                             const typeColor = isTerminal ? '#f59e0b' : isCodex ? '#10b981' : isAgent ? '#ef4444' : '#60a5fa';
                             return (
                               <button
@@ -1099,7 +1099,7 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                           const isTerminal = !s.task || s.task === 'Terminal';
                           const isAgent = s.task?.startsWith('Agent (');
                           const cliLabel = s.cliType === 'codex' ? 'Codex' : s.cliType === 'claude' ? 'Claude' : '';
-                          const typeLabel = isTerminal ? 'Terminal' : `${cliLabel ? cliLabel + ' ' : ''}${isAgent ? 'Agent' : 'Hivemind'}`;
+                          const typeLabel = isTerminal ? 'Terminal' : `${cliLabel ? cliLabel + ' ' : ''}${isAgent ? 'Agent' : 'Session'}`;
                           const typeColor = isTerminal ? '#f59e0b' : s.cliType === 'codex' ? '#7A9DFF' : '#60a5fa';
                           return (
                             <button

@@ -1,39 +1,16 @@
 import type { FastifyPluginAsync } from 'fastify';
-import { join } from 'path';
-import { homedir } from 'os';
-import { existsSync } from 'fs';
 import { getDb } from '../db/index.js';
-
-/**
- * Resolve the ruflo command in priority order:
- * 1. ruflo-run.sh (created by DevCortex installer) — fastest, no npm overhead
- * 2. Local ruflo binary at ~/.octoally/ruflo/ — installed by ruflo-install endpoint
- * 3. npx ruflo@latest — slowest fallback, prompts for install if not cached
- */
-const RUFLO_RUN = existsSync(join(homedir(), '.octoally', 'ruflo-run.sh'))
-  ? join(homedir(), '.octoally', 'ruflo-run.sh')
-  : join(homedir(), '.hivecommand', 'ruflo-run.sh');
-const RUFLO_LOCAL_BIN = existsSync(join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo'))
-  ? join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo')
-  : existsSync(join(homedir(), '.hivecommand', 'ruflo', 'node_modules', '.bin', 'ruflo'))
-    ? join(homedir(), '.hivecommand', 'ruflo', 'node_modules', '.bin', 'ruflo')
-    : null;
-const RUFLO_CMD = existsSync(RUFLO_RUN)
-  ? `bash ${RUFLO_RUN}`
-  : RUFLO_LOCAL_BIN
-    ? RUFLO_LOCAL_BIN
-    : 'npx ruflo@latest';
 
 /** Default values for all settings */
 const DEFAULTS: Record<string, string> = {
-  ruflo_command: RUFLO_CMD,
-  hivemind_claude_command: RUFLO_CMD,
-  hivemind_codex_command: RUFLO_CMD,
-  agent_claude_command: RUFLO_CMD,
-  agent_codex_command: RUFLO_CMD,
+  session_claude_command: 'claude',
+  session_codex_command: 'codex',
+  agent_claude_command: 'claude',
+  agent_codex_command: 'codex',
   terminal_font_size: '13',
   app_font_size: '13',
   server_port: '42010',
+  ruflo_disposition: 'undecided',   // undecided | keep | remove_all | removed
 };
 
 export function getSetting(key: string): string {

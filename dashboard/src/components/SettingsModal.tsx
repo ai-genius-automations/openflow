@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { X, Settings, Check, Loader2, Zap, Bot, Type, Globe, RotateCcw } from 'lucide-react';
+import { X, Settings, Check, Loader2, Zap, Bot, Type, Globe, RotateCcw, Trash2 } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 
 interface SettingsModalProps {
@@ -57,8 +57,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
     queryFn: () => fetch('/api/network-info').then((r) => r.json()) as Promise<{ addresses: string[]; port: number }>,
   });
 
-  const [hivemindClaudeCmd, setHivemindClaudeCmd] = useState('');
-  const [hivemindCodexCmd, setHivemindCodexCmd] = useState('');
+  const [sessionClaudeCmd, setSessionClaudeCmd] = useState('');
+  const [sessionCodexCmd, setSessionCodexCmd] = useState('');
   const [agentClaudeCmd, setAgentClaudeCmd] = useState('');
   const [agentCodexCmd, setAgentCodexCmd] = useState('');
   const [fontSize, setFontSize] = useState('13');
@@ -69,11 +69,10 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
   useEffect(() => {
     if (data?.settings) {
       const s = data.settings;
-      // Fall back to ruflo_command for backward compat
-      setHivemindClaudeCmd(s.hivemind_claude_command || s.ruflo_command || '');
-      setHivemindCodexCmd(s.hivemind_codex_command || s.ruflo_command || '');
-      setAgentClaudeCmd(s.agent_claude_command || s.ruflo_command || '');
-      setAgentCodexCmd(s.agent_codex_command || s.ruflo_command || '');
+      setSessionClaudeCmd(s.session_claude_command || '');
+      setSessionCodexCmd(s.session_codex_command || '');
+      setAgentClaudeCmd(s.agent_claude_command || '');
+      setAgentCodexCmd(s.agent_codex_command || '');
       setFontSize(s.terminal_font_size || '13');
       setAppFontSize(s.app_font_size || '13');
       setServerPort(s.server_port || '42010');
@@ -99,9 +98,8 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
 
   function handleSave() {
     mutation.mutate({
-      ruflo_command: hivemindClaudeCmd, // keep backward compat
-      hivemind_claude_command: hivemindClaudeCmd,
-      hivemind_codex_command: hivemindCodexCmd,
+      session_claude_command: sessionClaudeCmd,
+      session_codex_command: sessionCodexCmd,
       agent_claude_command: agentClaudeCmd,
       agent_codex_command: agentCodexCmd,
       terminal_font_size: fontSize,
@@ -155,31 +153,31 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
             </div>
           ) : (
             <>
-              {/* Hive Mind Commands */}
+              {/* Session Commands */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
                   <Zap className="w-4 h-4" style={{ color: '#60a5fa' }} />
                   <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    Hive Mind Commands
+                    Session Commands
                   </h4>
                 </div>
                 <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  The RuFlo command used when launching Hive Mind sessions.
+                  The CLI command used when launching sessions.
                 </p>
                 <div className="space-y-3 pl-1">
                   <CommandInput
                     label="Claude"
                     icon={<ClaudeIcon className="w-3.5 h-3.5" style={{ color: '#60a5fa' }} />}
-                    value={hivemindClaudeCmd}
-                    onChange={setHivemindClaudeCmd}
-                    placeholder="bash ~/.octoally/ruflo-run.sh"
+                    value={sessionClaudeCmd}
+                    onChange={setSessionClaudeCmd}
+                    placeholder="claude"
                   />
                   <CommandInput
                     label="Codex"
                     icon={<CodexIcon className="w-3.5 h-3.5" style={{ color: '#60a5fa' }} />}
-                    value={hivemindCodexCmd}
-                    onChange={setHivemindCodexCmd}
-                    placeholder="bash ~/.octoally/ruflo-run.sh"
+                    value={sessionCodexCmd}
+                    onChange={setSessionCodexCmd}
+                    placeholder="claude"
                   />
                 </div>
               </div>
@@ -193,7 +191,7 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </h4>
                 </div>
                 <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  The RuFlo command used when launching single Agent sessions.
+                  The CLI command used when launching Agent sessions.
                 </p>
                 <div className="space-y-3 pl-1">
                   <CommandInput
@@ -201,14 +199,14 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     icon={<ClaudeIcon className="w-3.5 h-3.5" style={{ color: '#ef4444' }} />}
                     value={agentClaudeCmd}
                     onChange={setAgentClaudeCmd}
-                    placeholder="bash ~/.octoally/ruflo-run.sh"
+                    placeholder="claude"
                   />
                   <CommandInput
                     label="Codex"
                     icon={<CodexIcon className="w-3.5 h-3.5" style={{ color: '#ef4444' }} />}
                     value={agentCodexCmd}
                     onChange={setAgentCodexCmd}
-                    placeholder="bash ~/.octoally/ruflo-run.sh"
+                    placeholder="claude"
                   />
                 </div>
               </div>
@@ -338,6 +336,61 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                     </div>
                   </div>
                 </div>
+              </div>
+              {/* Clean RuFlo */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Trash2 className="w-4 h-4" style={{ color: '#ef4444' }} />
+                  <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
+                    Remove RuFlo
+                  </h4>
+                </div>
+                <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
+                  Remove all RuFlo/claude-flow artifacts from all projects and global config.
+                  Resets Claude and Codex settings to defaults.
+                </p>
+                {(() => {
+                  const [cleaning, setCleaning] = useState(false);
+                  const [cleanResult, setCleanResult] = useState<string | null>(null);
+                  return (
+                    <>
+                      <button
+                        onClick={async () => {
+                          if (!confirm(
+                            'This will delete .claude/, .codex/, CLAUDE.md, and all ruflo/claude-flow config from ALL projects and global files.\n\n' +
+                            'Claude/Codex will ask you to trust each folder again on next use.\n\nContinue?'
+                          )) return;
+                          setCleaning(true);
+                          setCleanResult(null);
+                          try {
+                            const result = await api.projects.rufloUninstallAll();
+                            queryClient.invalidateQueries({ queryKey: ['projects'] });
+                            queryClient.invalidateQueries({ queryKey: ['ruflo-disposition'] });
+                            const total = result.projectsCleaned + result.globalCleaned.length;
+                            setCleanResult(total > 0
+                              ? `Cleaned ${result.projectsCleaned} project(s) and ${result.globalCleaned.length} global item(s).`
+                              : 'No RuFlo artifacts found — already clean.');
+                          } catch (err: any) {
+                            setCleanResult(`Error: ${err.message || 'Cleanup failed'}`);
+                          } finally {
+                            setCleaning(false);
+                          }
+                        }}
+                        disabled={cleaning}
+                        className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:opacity-80"
+                        style={{ background: '#ef4444', color: 'white', opacity: cleaning ? 0.6 : 1 }}
+                      >
+                        {cleaning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
+                        {cleaning ? 'Cleaning...' : 'Clean all projects'}
+                      </button>
+                      {cleanResult && (
+                        <p className="text-xs mt-1" style={{ color: cleanResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                          {cleanResult}
+                        </p>
+                      )}
+                    </>
+                  );
+                })()}
               </div>
             </>
           )}

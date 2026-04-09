@@ -32,9 +32,7 @@ import {
 import type { AppRouter } from './trpc/router.js';
 import { killAllSessions, cleanupStaleRunningSessions, autoReconnectDetachedSessions, getReconnectStatus, startPendingSessionWatchdog } from './services/session-manager.js';
 import { config } from './config.js';
-import { appendFileSync, writeFileSync, readdirSync, existsSync, readFileSync, rmSync } from 'fs';
-import { join } from 'path';
-import { homedir } from 'os';
+import { appendFileSync, writeFileSync } from 'fs';
 const tlog = (s: string) => { try { appendFileSync('/tmp/octoally-timing.log', `[${new Date().toISOString()}] ${s}\n`); } catch {} };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -64,37 +62,6 @@ async function start() {
   // Clear timing log for fresh run
   try { writeFileSync('/tmp/octoally-timing.log', ''); } catch {}
 
-  // Clean stale agentdb v2 from all locations. agentdb 2.x has keepalive timers
-  // that prevent ruflo hooks from exiting, hanging session-end indefinitely.
-  // agentdb is now bundled inside ruflo — standalone copies are always stale.
-  try {
-    let cleaned = 0;
-    // 1. Remove standalone agentdb from the shared ruflo install
-    const rufloAgentdbPaths = [
-      join(homedir(), '.octoally', 'ruflo', 'node_modules', 'agentdb'),
-      join(homedir(), '.hivecommand', 'ruflo', 'node_modules', 'agentdb'),
-    ];
-    for (const p of rufloAgentdbPaths) {
-      if (existsSync(p)) {
-        try { rmSync(p, { recursive: true, force: true }); cleaned++; } catch {}
-      }
-    }
-    // 2. Remove stale npx caches with @claude-flow/cli that have standalone agentdb
-    const npxDir = join(homedir(), '.npm', '_npx');
-    if (existsSync(npxDir)) {
-      for (const entry of readdirSync(npxDir)) {
-        const cacheDir = join(npxDir, entry);
-        const cfPkg = join(cacheDir, 'node_modules', '@claude-flow', 'cli', 'package.json');
-        if (!existsSync(cfPkg)) continue;
-        const staleAgentdb = join(cacheDir, 'node_modules', 'agentdb');
-        if (existsSync(staleAgentdb)) {
-          try { rmSync(cacheDir, { recursive: true, force: true }); cleaned++; } catch {}
-        }
-      }
-    }
-    if (cleaned > 0) console.log(`  Cleaned ${cleaned} stale agentdb location(s)`);
-  } catch { /* non-fatal */ }
-
   // Initialize database, load projects from user config, and clean up orphaned sessions
   let t = Date.now();
   initDb();
@@ -114,124 +81,6 @@ async function start() {
   t = Date.now();
   await initProjects();
   tlog(`[STARTUP] initProjects: ${Date.now() - t}ms`);
-  // Migrate stale `npx @claude-flow/cli@latest` references in project hooks
-  // to the local ruflo binary. This is the #1 cause of hivemind session hangs:
-  // the stop hook calls npx which downloads the entire package on every session end.
-  // Targeted one-time fix — only rewrites files that contain the broken pattern.
-  try {
-    const db = getDb();
-    const projects = db.prepare('SELECT path FROM projects').all() as { path: string }[];
-    // Check both current and legacy ruflo install paths
-    const rufloPrimary = join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo');
-    const rufloLegacy = join(homedir(), '.hivecommand', 'ruflo', 'node_modules', '.bin', 'ruflo');
-    const localRuflo = existsSync(rufloPrimary) ? rufloPrimary : existsSync(rufloLegacy) ? rufloLegacy : null;
-    let migrated = 0;
-
-    // Match all stale npx package names: @claude-flow/cli@latest, claude-flow@alpha, etc.
-    const staleNpxPattern = /npx\s+(?:@claude-flow\/cli@\S+|claude-flow@\S+)/g;
-    const staleNpxCheck = (s: string) => s.includes('npx @claude-flow/cli') || s.includes('npx claude-flow@');
-
-    if (!localRuflo) {
-      console.log(`  [hook-migration] No local ruflo binary found (checked ${rufloPrimary} and ${rufloLegacy})`);
-    } else {
-      for (const { path: projectPath } of projects) {
-        // 1. Patch hook shell scripts
-        const hookFiles = [
-          join(projectPath, '.claude', 'hooks', 'session-end.sh'),
-          join(projectPath, '.claude', 'helpers', 'pre-commit'),
-          join(projectPath, '.claude', 'helpers', 'post-commit'),
-        ];
-        for (const file of hookFiles) {
-          try {
-            if (!existsSync(file)) continue;
-            const content = readFileSync(file, 'utf-8');
-            if (!staleNpxCheck(content)) continue;
-            const fixed = content.replace(staleNpxPattern, `"${localRuflo}"`);
-            if (fixed !== content) {
-              writeFileSync(file, fixed, 'utf-8');
-              migrated++;
-            }
-          } catch (err: any) {
-            console.error(`  [hook-migration] Failed to migrate ${file}: ${err.message}`);
-          }
-        }
-
-        // 2. Patch settings.json hook commands that call stale npx packages directly
-        // No quotes around the path — it's already inside a JSON string value
-        const settingsPath = join(projectPath, '.claude', 'settings.json');
-        try {
-          if (existsSync(settingsPath)) {
-            let content = readFileSync(settingsPath, 'utf-8');
-            // Repair damage from v1.0.51 which inserted literal quotes inside JSON strings:
-            //   ""/path/.bin/ruflo"  →  /path/.bin/ruflo
-            // The spurious quotes wrap the ruflo path inside a JSON string value.
-            const repaired = content.replace(/"(\/[^"]*\/\.bin\/ruflo)"/g, '$1');
-            if (repaired !== content) {
-              try {
-                JSON.parse(repaired);
-                content = repaired;
-                writeFileSync(settingsPath, content, 'utf-8');
-                migrated++;
-                console.log(`  [hook-migration] Repaired malformed JSON in ${settingsPath}`);
-              } catch { /* still broken, skip */ }
-            }
-            if (staleNpxCheck(content)) {
-              const fixed = content.replace(staleNpxPattern, localRuflo);
-              try {
-                JSON.parse(fixed);
-                writeFileSync(settingsPath, fixed, 'utf-8');
-                migrated++;
-              } catch {
-                console.error(`  [hook-migration] Skipped ${settingsPath} — replacement would produce invalid JSON`);
-              }
-            }
-          }
-        } catch (err: any) {
-          console.error(`  [hook-migration] Failed to migrate ${settingsPath}: ${err.message}`);
-        }
-
-        // 3. Ensure Stop/SessionEnd hooks have timeouts.
-        // ruflo hooks session-end hangs due to agentdb keepalive timers.
-        // Parse as JSON and add timeout to any hook entry that lacks one.
-        try {
-          const sp = join(projectPath, '.claude', 'settings.json');
-          if (existsSync(sp)) {
-            const raw = readFileSync(sp, 'utf-8');
-            let parsed: any;
-            try { parsed = JSON.parse(raw); } catch { parsed = null; }
-            if (parsed?.hooks) {
-              let changed = false;
-              for (const key of ['Stop', 'SessionEnd', 'SubagentStop']) {
-                const entries = parsed.hooks[key];
-                if (!Array.isArray(entries)) continue;
-                for (const entry of entries) {
-                  if (!Array.isArray(entry.hooks)) continue;
-                  for (const h of entry.hooks) {
-                    if (h.type === 'command' && !h.timeout) {
-                      h.timeout = 5000;
-                      changed = true;
-                    }
-                  }
-                }
-              }
-              if (changed) {
-                writeFileSync(sp, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
-                migrated++;
-              }
-            }
-          }
-        } catch { /* non-fatal */ }
-      }
-    }
-    if (migrated > 0) {
-      console.log(`  Migrated ${migrated} hook file(s) from npx @claude-flow/cli to local ruflo`);
-    } else {
-      console.log(`  [hook-migration] Checked ${projects.length} project(s), 0 needed migration (ruflo: ${localRuflo})`);
-    }
-  } catch (err: any) {
-    console.error(`  [hook-migration] Error: ${err.message}`);
-  }
-
   t = Date.now();
   await cleanupStaleRunningSessions();
   tlog(`[STARTUP] cleanupStale: ${Date.now() - t}ms`);
