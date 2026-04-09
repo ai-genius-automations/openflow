@@ -8,6 +8,7 @@ import { execFile } from 'child_process';
 import { existsSync, readFileSync, writeFileSync, readdirSync, lstatSync, unlinkSync } from 'fs';
 import { promisify } from 'util';
 import { getSetting } from './settings.js';
+import { installDefaultAgents } from '../data/default-agents.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -295,6 +296,9 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
     await exportToConfig();
 
+    // Ensure default agents are installed (no-op if marker exists)
+    try { installDefaultAgents(); } catch { /* non-fatal */ }
+
     return { ok: true, project };
   });
 
@@ -451,6 +455,12 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     // Update disposition to 'removed'
     upsert.run('ruflo_disposition', 'removed');
 
+    // Re-install default agents (ruflo cleanup may have deleted .claude/agents/)
+    try {
+      const { installed } = installDefaultAgents(true);
+      if (installed.length > 0) globalCleaned.push(`installed ${installed.length} default agent(s)`);
+    } catch { /* non-fatal */ }
+
     return { ok: true, projectsCleaned, globalCleaned };
   });
 
@@ -495,7 +505,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true, disposition };
   });
 
-  // List available ruflo agent types for a project (reads .claude/agents/*.md frontmatter)
+  // List available agent types for a project (reads .claude/agents/*.md from project + global)
   app.get<{
     Params: { id: string };
   }>('/projects/:id/ruflo-agents', async (req, reply) => {
@@ -503,12 +513,11 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as Project | undefined;
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
-    const agentsDir = join(project.path, '.claude', 'agents');
-    if (!existsSync(agentsDir)) return { agents: [] };
-
     const agents: { name: string; type: string; description: string; category: string }[] = [];
-    try {
-      const walkDir = async (dir: string, category: string) => {
+
+    const walkDir = async (dir: string, category: string) => {
+      if (!existsSync(dir)) return;
+      try {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           const fullPath = join(dir, entry.name);
@@ -530,11 +539,14 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
             } catch {}
           }
         }
-      };
-      await walkDir(agentsDir, 'core');
-    } catch {}
+      } catch {}
+    };
 
-    // Deduplicate by name (some agents have copies in subdirectories)
+    // Scan both global and project-level agent directories
+    await walkDir(join(homedir(), '.claude', 'agents'), 'global');
+    await walkDir(join(project.path, '.claude', 'agents'), 'project');
+
+    // Deduplicate by name (project-level overrides global)
     const seen = new Set<string>();
     const unique = agents.filter(a => {
       if (seen.has(a.name)) return false;

@@ -150,6 +150,27 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
     },
   });
 
+  const agentMutation = useMutation({
+    mutationFn: () => {
+      const proj = projects.find((p) => p.id === projectId);
+      if (!proj) throw new Error('Select a project');
+      const baseTask = task.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE';
+      const sessionPromptVal = (sessionPrompt ?? proj.session_prompt ?? '').trim();
+      const effectiveTask = sessionPromptVal
+        ? `${baseTask}\n\n---\nAdditional Instructions:\n${sessionPromptVal}`
+        : baseTask;
+      return api.sessions.create({ project_path: proj.path, task: effectiveTask, project_id: proj.id, mode: 'agent', agent_type: 'coder' });
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      const proj = projects.find((p) => p.id === projectId);
+      setTask('');
+      if (data.session?.id) {
+        onSessionCreated?.(data.session.id, proj?.name, 'session');
+      }
+    },
+  });
+
   const terminalMutation = useMutation({
     mutationFn: () => {
       const proj = projects.find((p) => p.id === projectId);
@@ -394,6 +415,24 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
               Launch Session
             </button>
             <button
+              onClick={() => agentMutation.mutate()}
+              disabled={!projectId || agentMutation.isPending}
+              className="flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-medium transition-colors border disabled:opacity-50"
+              style={{
+                background: 'var(--bg-tertiary)',
+                borderColor: 'var(--border)',
+                color: 'var(--text-primary)',
+              }}
+              title="Launch a Claude agent session"
+            >
+              {agentMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Bot className="w-4 h-4" />
+              )}
+              Launch Agent
+            </button>
+            <button
               onClick={() => setShowOpenClaw(true)}
               disabled={!projectId}
               className="flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-medium transition-colors border disabled:opacity-50"
@@ -427,9 +466,9 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
             </button>
           </div>
 
-          {(createMutation.isError || terminalMutation.isError) && (
+          {(createMutation.isError || agentMutation.isError || terminalMutation.isError) && (
             <p className="text-sm" style={{ color: 'var(--error)' }}>
-              {((createMutation.error || terminalMutation.error) as Error).message}
+              {((createMutation.error || agentMutation.error || terminalMutation.error) as Error).message}
             </p>
           )}
         </div>

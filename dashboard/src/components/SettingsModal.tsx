@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { api } from '../lib/api';
-import { X, Settings, Check, Loader2, Zap, Bot, Type, Globe, RotateCcw, Trash2 } from 'lucide-react';
+import { X, Settings, Check, Loader2, Zap, Bot, Type, Globe, RotateCcw } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 
 interface SettingsModalProps {
@@ -337,55 +337,64 @@ export function SettingsModal({ onClose }: SettingsModalProps) {
                   </div>
                 </div>
               </div>
-              {/* Clean RuFlo */}
+              {/* Reinitialize */}
               <div className="space-y-3">
                 <div className="flex items-center gap-2">
-                  <Trash2 className="w-4 h-4" style={{ color: '#ef4444' }} />
+                  <RotateCcw className="w-4 h-4" style={{ color: '#f59e0b' }} />
                   <h4 className="text-sm font-semibold" style={{ color: 'var(--text-primary)' }}>
-                    Remove RuFlo
+                    Reinitialize OctoAlly
                   </h4>
                 </div>
                 <p className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  Remove all RuFlo/claude-flow artifacts from all projects and global config.
-                  Resets Claude and Codex settings to defaults.
+                  Resets all Claude/Codex settings, removes old artifacts, and reinstalls default agents and skills.
+                  Your projects are preserved.
                 </p>
                 {(() => {
-                  const [cleaning, setCleaning] = useState(false);
-                  const [cleanResult, setCleanResult] = useState<string | null>(null);
+                  const [running, setRunning] = useState(false);
+                  const [result, setResult] = useState<string | null>(null);
                   return (
                     <>
                       <button
                         onClick={async () => {
                           if (!confirm(
-                            'This will delete .claude/, .codex/, CLAUDE.md, and all ruflo/claude-flow config from ALL projects and global files.\n\n' +
-                            'Claude/Codex will ask you to trust each folder again on next use.\n\nContinue?'
+                            'This will:\n\n' +
+                            '• Remove .claude/, .codex/, CLAUDE.md from all projects\n' +
+                            '• Reset session commands to defaults\n' +
+                            '• Remove broken symlinks and old config\n' +
+                            '• Reinstall all default agents and skills\n\n' +
+                            'Your projects will be preserved. Claude/Codex will ask you to trust each folder again on next use.\n\nContinue?'
                           )) return;
-                          setCleaning(true);
-                          setCleanResult(null);
+                          setRunning(true);
+                          setResult(null);
                           try {
-                            const result = await api.projects.rufloUninstallAll();
+                            const res = await api.projects.rufloUninstallAll();
                             queryClient.invalidateQueries({ queryKey: ['projects'] });
                             queryClient.invalidateQueries({ queryKey: ['ruflo-disposition'] });
-                            const total = result.projectsCleaned + result.globalCleaned.length;
-                            setCleanResult(total > 0
-                              ? `Cleaned ${result.projectsCleaned} project(s) and ${result.globalCleaned.length} global item(s).`
-                              : 'No RuFlo artifacts found — already clean.');
+                            const parts: string[] = [];
+                            if (res.projectsCleaned > 0) parts.push(`reset ${res.projectsCleaned} project(s)`);
+                            const agentCount = res.globalCleaned.filter((s: string) => s.includes('agent')).length;
+                            if (agentCount > 0) parts.push(`installed agents`);
+                            const otherCount = res.globalCleaned.length - agentCount;
+                            if (otherCount > 0) parts.push(`cleaned ${otherCount} global item(s)`);
+                            setResult(parts.length > 0
+                              ? `Done — ${parts.join(', ')}.`
+                              : 'Already clean — reinstalled agents.');
                           } catch (err: any) {
-                            setCleanResult(`Error: ${err.message || 'Cleanup failed'}`);
+                            setResult(`Error: ${err.message || 'Failed'}`);
                           } finally {
-                            setCleaning(false);
+                            setRunning(false);
                           }
                         }}
-                        disabled={cleaning}
+                        disabled={running}
                         className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors hover:opacity-80"
-                        style={{ background: '#ef4444', color: 'white', opacity: cleaning ? 0.6 : 1 }}
+                        style={{ background: '#f59e0b', color: '#000', opacity: running ? 0.6 : 1 }}
                       >
-                        {cleaning ? <Loader2 className="w-3 h-3 animate-spin" /> : <Trash2 className="w-3 h-3" />}
-                        {cleaning ? 'Cleaning...' : 'Clean all projects'}
+                        {running ? <Loader2 className="w-3 h-3 animate-spin" /> : <RotateCcw className="w-3 h-3" />}
+                        {running ? 'Reinitializing...' : 'Reinitialize'}
                       </button>
-                      {cleanResult && (
-                        <p className="text-xs mt-1" style={{ color: cleanResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
-                          {cleanResult}
+                      {result && (
+                        <p className="text-xs mt-1" style={{ color: result.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                          {result}
                         </p>
                       )}
                     </>

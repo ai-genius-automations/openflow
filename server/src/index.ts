@@ -33,6 +33,7 @@ import type { AppRouter } from './trpc/router.js';
 import { killAllSessions, cleanupStaleRunningSessions, autoReconnectDetachedSessions, getReconnectStatus, startPendingSessionWatchdog } from './services/session-manager.js';
 import { config } from './config.js';
 import { appendFileSync, writeFileSync } from 'fs';
+import { installDefaultAgents } from './data/default-agents.js';
 const tlog = (s: string) => { try { appendFileSync('/tmp/octoally-timing.log', `[${new Date().toISOString()}] ${s}\n`); } catch {} };
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -61,6 +62,12 @@ async function start() {
 
   // Clear timing log for fresh run
   try { writeFileSync('/tmp/octoally-timing.log', ''); } catch {}
+
+  // Install default agents to ~/.claude/agents/ if not present
+  try {
+    const { installed } = installDefaultAgents();
+    if (installed.length > 0) console.log(`  Installed ${installed.length} default agent(s) to ~/.claude/agents/`);
+  } catch { /* non-fatal */ }
 
   // Initialize database, load projects from user config, and clean up orphaned sessions
   let t = Date.now();

@@ -127,10 +127,10 @@ function TaskModal({
               <>
                 <div className="flex items-center gap-2 text-sm font-medium" style={{ color: '#60a5fa' }}>
                   <Zap className="w-4 h-4" />
-                  Multi-Agent Orchestration
+                  Interactive Session
                 </div>
                 <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                  Launches an interactive Claude or Codex session for your project. Best for large features, refactors, or complex tasks spanning multiple files.
+                  Launches an interactive Claude or Codex session for your project. Best for general development, debugging, and tasks you want to guide directly.
                 </div>
               </>
             ) : (
@@ -280,7 +280,6 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
     staleTime: 120_000,
   });
   const agents = agentsData?.agents ?? [];
-  const hasAgents = agents.length > 0;
 
   const createMutation = useMutation({
     mutationFn: (opts: { task: string; mode: 'session' | 'agent'; agentType?: string; cliType?: 'claude' | 'codex' }) => {
@@ -456,21 +455,19 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
             )}
             Launch Session
           </button>
-          {hasAgents && (
-            <button
-              onClick={() => setLaunchMode('agent')}
-              disabled={createMutation.isPending}
-              className={btnBase}
-              style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
-            >
-              {createMutation.isPending && launchMode === 'agent' ? (
-                <Loader2 className="w-4 h-4 animate-spin" />
-              ) : (
-                <Bot className="w-4 h-4" style={{ color: '#ef4444' }} />
-              )}
-              Launch Agent
-            </button>
-          )}
+          <button
+            onClick={() => setLaunchMode('agent')}
+            disabled={createMutation.isPending}
+            className={btnBase}
+            style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+          >
+            {createMutation.isPending && launchMode === 'agent' ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Bot className="w-4 h-4" style={{ color: '#ef4444' }} />
+            )}
+            Launch Agent
+          </button>
           <button
             onClick={() => terminalMutation.mutate()}
             disabled={terminalMutation.isPending}
