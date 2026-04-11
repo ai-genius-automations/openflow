@@ -37,3 +37,8 @@ CLAUDE.md.*.bak
 
 # Claude Code local config
 CLAUDE.local.md
+
+# Runtime artifacts
+.octoally.pid
+.update-cache-stable
+logs/
