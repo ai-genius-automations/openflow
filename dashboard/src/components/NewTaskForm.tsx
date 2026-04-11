@@ -5,7 +5,7 @@ import { Play, Loader2, Plus, FolderOpen, ChevronRight, ArrowUp, Trash2, X, Bot,
 import { AgentGuideModal } from './AgentGuide';
 
 interface NewTaskFormProps {
-  onSessionCreated?: (sessionId: string, projectName?: string, mode?: 'hivemind' | 'terminal') => void;
+  onSessionCreated?: (sessionId: string, projectName?: string, mode?: 'session' | 'terminal') => void;
 }
 
 function FolderBrowser({ onSelect }: { onSelect: (path: string, folderName: string) => void }) {
@@ -83,12 +83,12 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
   const [projectId, setProjectId] = useState('');
   const [task, setTask] = useState('');
   const [showAddProject, setShowAddProject] = useState(false);
-  const [newProject, setNewProject] = useState({ name: '', path: '', description: '', ruflo_prompt: '', openclaw_prompt: '' });
+  const [newProject, setNewProject] = useState({ name: '', path: '', description: '', session_prompt: '', openclaw_prompt: '' });
   const [showBrowser, setShowBrowser] = useState(false);
   const [showOpenClaw, setShowOpenClaw] = useState(false);
   const [editingProject, setEditingProject] = useState(false);
   // Session-level prompt overrides (reset when project changes, not saved)
-  const [sessionRufloPrompt, setSessionClaudeFlowPrompt] = useState<string | null>(null);
+  const [sessionPrompt, setSessionPrompt] = useState<string | null>(null);
   const [sessionOpenclawPrompt, setSessionOpenclawPrompt] = useState<string | null>(null);
   const queryClient = useQueryClient();
 
@@ -105,13 +105,13 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
       setShowAddProject(false);
       setShowBrowser(false);
-      setNewProject({ name: '', path: '', description: '', ruflo_prompt: '', openclaw_prompt: '' });
+      setNewProject({ name: '', path: '', description: '', session_prompt: '', openclaw_prompt: '' });
       if (data.project?.id) setProjectId(data.project.id);
     },
   });
 
   const updateProjectMutation = useMutation({
-    mutationFn: (data: { id: string; ruflo_prompt?: string | null; openclaw_prompt?: string | null; name?: string; description?: string }) => {
+    mutationFn: (data: { id: string; session_prompt?: string | null; openclaw_prompt?: string | null; name?: string; description?: string }) => {
       const { id, ...fields } = data;
       return api.projects.update(id, fields);
     },
@@ -134,9 +134,9 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
       const proj = projects.find((p) => p.id === projectId);
       if (!proj) throw new Error('Select a project');
       const baseTask = task.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE';
-      const cfPrompt = (sessionRufloPrompt ?? proj.ruflo_prompt ?? '').trim();
-      const effectiveTask = cfPrompt
-        ? `${baseTask}\n\n---\nAdditional Instructions:\n${cfPrompt}`
+      const sessionPromptVal = (sessionPrompt ?? proj.session_prompt ?? '').trim();
+      const effectiveTask = sessionPromptVal
+        ? `${baseTask}\n\n---\nAdditional Instructions:\n${sessionPromptVal}`
         : baseTask;
       return api.sessions.create({ project_path: proj.path, task: effectiveTask, project_id: proj.id });
     },
@@ -145,7 +145,28 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
       const proj = projects.find((p) => p.id === projectId);
       setTask('');
       if (data.session?.id) {
-        onSessionCreated?.(data.session.id, proj?.name, 'hivemind');
+        onSessionCreated?.(data.session.id, proj?.name, 'session');
+      }
+    },
+  });
+
+  const agentMutation = useMutation({
+    mutationFn: () => {
+      const proj = projects.find((p) => p.id === projectId);
+      if (!proj) throw new Error('Select a project');
+      const baseTask = task.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE';
+      const sessionPromptVal = (sessionPrompt ?? proj.session_prompt ?? '').trim();
+      const effectiveTask = sessionPromptVal
+        ? `${baseTask}\n\n---\nAdditional Instructions:\n${sessionPromptVal}`
+        : baseTask;
+      return api.sessions.create({ project_path: proj.path, task: effectiveTask, project_id: proj.id, mode: 'agent', agent_type: 'coder' });
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      const proj = projects.find((p) => p.id === projectId);
+      setTask('');
+      if (data.session?.id) {
+        onSessionCreated?.(data.session.id, proj?.name, 'session');
       }
     },
   });
@@ -175,7 +196,7 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
   // Reset session overrides when project changes
   const handleProjectChange = (id: string) => {
     setProjectId(id);
-    setSessionClaudeFlowPrompt(null);
+    setSessionPrompt(null);
     setSessionOpenclawPrompt(null);
     setEditingProject(false);
   };
@@ -197,7 +218,7 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
         style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
       >
         <h2 className="text-xl font-semibold mb-6" style={{ color: 'var(--text-primary)' }}>
-          Launch RuFlo Task
+          Launch Task
         </h2>
 
         <div className="space-y-5">
@@ -300,15 +321,15 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
               <div>
                 <div className="flex items-center justify-between mb-1">
                   <label className="block text-sm" style={{ color: 'var(--text-secondary)' }}>
-                    RuFlo Session Prompt
+                    Session Prompt
                   </label>
                   <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
                     Prepended to task when launching
                   </span>
                 </div>
                 <textarea
-                  value={sessionRufloPrompt ?? selectedProject.ruflo_prompt ?? ''}
-                  onChange={(e) => setSessionClaudeFlowPrompt(e.target.value)}
+                  value={sessionPrompt ?? selectedProject.session_prompt ?? ''}
+                  onChange={(e) => setSessionPrompt(e.target.value)}
                   placeholder="System instructions prepended to every task for this project..."
                   rows={3}
                   className="w-full px-4 py-2.5 rounded-lg border text-sm outline-none resize-y"
@@ -341,7 +362,7 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
                   }}
                 />
               </div>
-              {(sessionRufloPrompt !== null || sessionOpenclawPrompt !== null) && (
+              {(sessionPrompt !== null || sessionOpenclawPrompt !== null) && (
                 <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
                   Prompts modified for this session only. Use the edit button to save as project defaults.
                 </p>
@@ -357,7 +378,7 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
             <textarea
               value={task}
               onChange={(e) => setTask(e.target.value)}
-              placeholder="Describe what you want ruflo to do...&#10;&#10;Be specific about the changes you want. Include file paths, feature descriptions, and acceptance criteria."
+              placeholder="Describe what you want Claude to do...&#10;&#10;Be specific about the changes you want. Include file paths, feature descriptions, and acceptance criteria."
               rows={10}
               className="w-full px-4 py-3 rounded-lg border text-sm outline-none resize-y"
               style={{
@@ -391,7 +412,25 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
               ) : (
                 <Play className="w-4 h-4" />
               )}
-              Launch Hive Mind
+              Launch Session
+            </button>
+            <button
+              onClick={() => agentMutation.mutate()}
+              disabled={!projectId || agentMutation.isPending}
+              className="flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-medium transition-colors border disabled:opacity-50"
+              style={{
+                background: 'var(--bg-tertiary)',
+                borderColor: 'var(--border)',
+                color: 'var(--text-primary)',
+              }}
+              title="Launch a Claude agent session"
+            >
+              {agentMutation.isPending ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                <Bot className="w-4 h-4" />
+              )}
+              Launch Agent
             </button>
             <button
               onClick={() => setShowOpenClaw(true)}
@@ -427,9 +466,9 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
             </button>
           </div>
 
-          {(createMutation.isError || terminalMutation.isError) && (
+          {(createMutation.isError || agentMutation.isError || terminalMutation.isError) && (
             <p className="text-sm" style={{ color: 'var(--error)' }}>
-              {((createMutation.error || terminalMutation.error) as Error).message}
+              {((createMutation.error || agentMutation.error || terminalMutation.error) as Error).message}
             </p>
           )}
         </div>
@@ -439,9 +478,9 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
       {showOpenClaw && (() => {
         const proj = projects.find((p) => p.id === projectId);
         if (!proj) return null;
-        const cfPrompt = (sessionRufloPrompt ?? proj.ruflo_prompt ?? '').trim();
+        const sessionPromptVal = (sessionPrompt ?? proj.session_prompt ?? '').trim();
         const ocPrompt = (sessionOpenclawPrompt ?? proj.openclaw_prompt ?? '').trim();
-        const instructions = [cfPrompt, ocPrompt].filter(Boolean).join('\n\n') || undefined;
+        const instructions = [sessionPromptVal, ocPrompt].filter(Boolean).join('\n\n') || undefined;
         return (
           <AgentGuideModal
             onClose={() => setShowOpenClaw(false)}
@@ -475,7 +514,7 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
               Add Project
             </h3>
             <button
-              onClick={() => { setShowAddProject(false); setShowBrowser(false); setNewProject({ name: '', path: '', description: '', ruflo_prompt: '', openclaw_prompt: '' }); }}
+              onClick={() => { setShowAddProject(false); setShowBrowser(false); setNewProject({ name: '', path: '', description: '', session_prompt: '', openclaw_prompt: '' }); }}
               className="p-1 rounded hover:bg-white/10"
               style={{ color: 'var(--text-secondary)' }}
             >
@@ -553,14 +592,14 @@ export function NewTaskForm({ onSessionCreated }: NewTaskFormProps) {
               />
             </div>
 
-            {/* RuFlo prompt */}
+            {/* Session prompt */}
             <div>
               <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>
-                RuFlo Session Prompt (optional)
+                Session Prompt (optional)
               </label>
               <textarea
-                value={newProject.ruflo_prompt}
-                onChange={(e) => setNewProject((p) => ({ ...p, ruflo_prompt: e.target.value }))}
+                value={newProject.session_prompt}
+                onChange={(e) => setNewProject((p) => ({ ...p, session_prompt: e.target.value }))}
                 placeholder="System instructions prepended to every task for this project..."
                 rows={2}
                 className="w-full px-4 py-2.5 rounded-lg border text-sm outline-none resize-y"
@@ -622,14 +661,14 @@ function EditProjectPanel({
   error,
 }: {
   project: Project;
-  onSave: (data: { name?: string; description?: string; ruflo_prompt?: string | null; openclaw_prompt?: string | null }) => void;
+  onSave: (data: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null }) => void;
   onClose: () => void;
   isPending: boolean;
   error?: string;
 }) {
   const [name, setName] = useState(project.name);
   const [description, setDescription] = useState(project.description || '');
-  const [rufloPrompt, setClaudeFlowPrompt] = useState(project.ruflo_prompt || '');
+  const [sessionPromptEdit, setSessionPromptEdit] = useState(project.session_prompt || '');
   const [openclawPrompt, setOpenclawPrompt] = useState(project.openclaw_prompt || '');
 
   return (
@@ -686,11 +725,11 @@ function EditProjectPanel({
         </div>
         <div>
           <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>
-            RuFlo Session Prompt
+            Session Prompt
           </label>
           <textarea
-            value={rufloPrompt}
-            onChange={(e) => setClaudeFlowPrompt(e.target.value)}
+            value={sessionPromptEdit}
+            onChange={(e) => setSessionPromptEdit(e.target.value)}
             placeholder="System instructions prepended to every task for this project..."
             rows={3}
             className="w-full px-4 py-2.5 rounded-lg border text-sm outline-none resize-y"
@@ -719,7 +758,7 @@ function EditProjectPanel({
           onClick={() => onSave({
             name: name !== project.name ? name : undefined,
             description: description !== (project.description || '') ? description : undefined,
-            ruflo_prompt: rufloPrompt !== (project.ruflo_prompt || '') ? (rufloPrompt || null) : undefined,
+            session_prompt: sessionPromptEdit !== (project.session_prompt || '') ? (sessionPromptEdit || null) : undefined,
             openclaw_prompt: openclawPrompt !== (project.openclaw_prompt || '') ? (openclawPrompt || null) : undefined,
           })}
           disabled={isPending || !name}

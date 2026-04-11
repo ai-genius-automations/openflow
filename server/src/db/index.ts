@@ -1,4 +1,6 @@
 import Database from 'better-sqlite3';
+import { dirname, join } from 'path';
+import { existsSync } from 'fs';
 import { config } from '../config.js';
 
 let db: Database.Database;
@@ -108,6 +110,8 @@ export function initDb(): void {
   try { db.exec('ALTER TABLE projects ADD COLUMN ruflo_prompt TEXT'); } catch {}
   // Migrate old column name
   try { db.exec('ALTER TABLE projects RENAME COLUMN claude_flow_prompt TO ruflo_prompt'); } catch {}
+  // Rename ruflo_prompt → session_prompt
+  try { db.exec('ALTER TABLE projects RENAME COLUMN ruflo_prompt TO session_prompt'); } catch {}
   try { db.exec('ALTER TABLE projects ADD COLUMN openclaw_prompt TEXT'); } catch {}
   try { db.exec('ALTER TABLE sessions ADD COLUMN terminal_cols INTEGER DEFAULT 120'); } catch {}
   try { db.exec('ALTER TABLE sessions ADD COLUMN external_socket TEXT'); } catch {}
@@ -115,13 +119,86 @@ export function initDb(): void {
   try { db.exec('ALTER TABLE events ADD COLUMN project_id TEXT REFERENCES projects(id)'); } catch {}
   try { db.exec('ALTER TABLE sessions ADD COLUMN pre_popout_cols INTEGER'); } catch {}
   try { db.exec('CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id)'); } catch {}
+  // Per-project accent color for card title bar
+  try { db.exec("ALTER TABLE projects ADD COLUMN color TEXT DEFAULT ''"); } catch {}
+  // Per-project flag to launch sessions with --dangerously-skip-permissions
+  try { db.exec('ALTER TABLE projects ADD COLUMN skip_permissions INTEGER DEFAULT 0'); } catch {}
   // Codex support: track which CLI (claude or codex) launched the session
   try { db.exec("ALTER TABLE sessions ADD COLUMN cli_type TEXT DEFAULT 'claude'"); } catch {}
+  // ruflo deprecation: seed disposition setting
+  try { db.exec("INSERT OR IGNORE INTO settings (key, value) VALUES ('ruflo_disposition', 'undecided')"); } catch {}
 
   try { db.exec('ALTER TABLE sessions ADD COLUMN session_state TEXT'); } catch {}
 
   // Note: orphaned process cleanup is handled by cleanupStaleRunningSessions()
   // which is called after initDb() in index.ts — it kills processes AND marks DB records.
 
+  // Migrate projects from dev-swarm.db if octoally.db is empty (one-time migration
+  // from the old setup where octoally.db was a symlink to hivecommand.db)
+  migrateProjectsFromDevSwarm();
+
   console.log('📦 Database initialized');
+}
+
+function migrateProjectsFromDevSwarm(): void {
+  const count = (db.prepare('SELECT COUNT(*) as n FROM projects').get() as { n: number }).n;
+  if (count > 0) return; // already has projects, nothing to migrate
+
+  const devSwarmPath = join(dirname(config.dbPath), 'dev-swarm.db');
+  if (!existsSync(devSwarmPath)) return;
+
+  try {
+    const src = new Database(devSwarmPath, { readonly: true });
+
+    // Source DB may have ruflo_prompt or session_prompt depending on version
+    let projects: Array<Record<string, unknown>>;
+    try {
+      projects = src.prepare(
+        'SELECT id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt, default_web_url FROM projects'
+      ).all() as Array<Record<string, unknown>>;
+    } catch {
+      // Fallback: old schema with ruflo_prompt
+      projects = src.prepare(
+        'SELECT id, name, path, description, created_at, updated_at, ruflo_prompt AS session_prompt, openclaw_prompt, default_web_url FROM projects'
+      ).all() as Array<Record<string, unknown>>;
+    }
+
+    // Only migrate sessions whose project_id exists in the projects we're bringing over
+    const projectIds = projects.map((p) => p.id as string);
+    const sessions = projectIds.length > 0
+      ? src.prepare(
+          `SELECT id, project_id, task, status, pid, started_at, completed_at, exit_code,
+                  created_at, updated_at, claude_session_id, terminal_cols, external_socket,
+                  pre_popout_cols, cli_type
+           FROM sessions WHERE project_id IN (${projectIds.map(() => '?').join(',')})`
+        ).all(...projectIds) as Array<Record<string, unknown>>
+      : [];
+
+    src.close();
+
+    if (projects.length === 0) return;
+
+    const insertProject = db.prepare(
+      `INSERT OR IGNORE INTO projects (id, name, path, description, created_at, updated_at, session_prompt, openclaw_prompt, default_web_url)
+       VALUES (@id, @name, @path, @description, @created_at, @updated_at, @session_prompt, @openclaw_prompt, @default_web_url)`
+    );
+    const insertSession = db.prepare(
+      `INSERT OR IGNORE INTO sessions (id, project_id, task, status, pid, started_at, completed_at, exit_code,
+                                       created_at, updated_at, claude_session_id, terminal_cols, external_socket,
+                                       pre_popout_cols, cli_type)
+       VALUES (@id, @project_id, @task, @status, @pid, @started_at, @completed_at, @exit_code,
+               @created_at, @updated_at, @claude_session_id, @terminal_cols, @external_socket,
+               @pre_popout_cols, @cli_type)`
+    );
+
+    const tx = db.transaction(() => {
+      for (const row of projects) insertProject.run(row);
+      for (const row of sessions) insertSession.run(row);
+    });
+    tx();
+
+    console.log(`📦 Migrated ${projects.length} project(s) and ${sessions.length} session(s) from dev-swarm.db`);
+  } catch (err) {
+    console.warn('⚠️  Failed to migrate projects from dev-swarm.db:', err);
+  }
 }

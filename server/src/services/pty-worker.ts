@@ -27,12 +27,7 @@ function sessionEnv(): Record<string, string> {
     ...rest,
     TERM: 'xterm-256color',
     OCTOALLY_SESSION: '1',
-    HIVECOMMAND_SESSION: '1',
     HEADLESS_WORKERS_DISABLED: '1',
-    // Skip ruflo-run.sh update check during session spawns — the ruflo-install
-    // endpoint already handles updates. Without this, every spawn triggers a
-    // registry check and potentially a full npm install (30s+), causing hangs.
-    RUFLO_SKIP_UPDATE_CHECK: '1',
   };
 }
 
@@ -50,9 +45,9 @@ interface SpawnMessage {
   sessionId: string;
   projectPath: string;
   task: string;
-  mode: 'hivemind' | 'terminal' | 'agent';
+  mode: 'session' | 'terminal' | 'agent';
   agentType?: string;
-  rufloCommand?: string;
+  sessionCommand?: string;
   cliType?: 'claude' | 'codex';
   cols: number;
   rows: number;
@@ -260,56 +255,55 @@ function cleanupPipePane(sessionId: string, fifoPath?: string): void {
 }
 
 /* ================================================================
-   hivemind command builder
+   session command builder
    ================================================================ */
 
-function buildHiveMindCommand(task: string, direct = false, rufloCmd = 'npx ruflo@latest', cliType: 'claude' | 'codex' = 'claude'): string {
+function buildSessionCommand(task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude'): string {
   const escaped = task.replace(/'/g, "'\\''");
   if (cliType === 'codex') {
-    // For Codex: ruflo hive-mind spawn sets up the swarm but --codex workers run headlessly
-    // and exit immediately. Instead, spawn the swarm then launch codex as the interactive session.
-    const spawn = `${rufloCmd} hive-mind spawn '${escaped}' --codex 2>/dev/null;`;
     // --no-alt-screen prevents Codex from using the alternate screen buffer,
     // which fixes resize/reflow issues in tmux and embedded terminals
-    const codex = `codex --no-alt-screen '${escaped}'`;
-    const base = `${spawn} ${codex}`;
+    const baseCmd = sessionCmd || 'codex';
+    const cmd = `${baseCmd} --no-alt-screen '${escaped}'`;
     if (direct) {
-      return `command bash -c '${base.replace(/'/g, "'\\''")}'`;
+      return `command bash -c '${cmd.replace(/'/g, "'\\''")}'`;
     }
-    return base;
+    return cmd;
   }
-  // Claude: --claude flag launches an interactive Claude Code session directly
+  // Claude: launch with configured command (may include flags like --dangerously-skip-permissions)
+  const baseCmd = sessionCmd || 'claude';
+  const cmd = `${baseCmd} '${escaped}'`;
   if (direct) {
-    return `command ${rufloCmd} hive-mind spawn '${escaped}' --claude`;
+    return `command ${cmd}`;
   }
-  return `${rufloCmd} hive-mind spawn '${escaped}' --claude`;
+  return cmd;
 }
 
-function buildAgentCommand(agentType: string, task: string, direct = false, rufloCmd = 'npx ruflo@latest', cliType: 'claude' | 'codex' = 'claude'): string {
+function buildAgentCommand(agentType: string, task: string, direct = false, sessionCmd = '', cliType: 'claude' | 'codex' = 'claude'): string {
   const escapedType = agentType.replace(/'/g, "'\\''");
   const escapedTask = task.replace(/'/g, "'\\''");
-  const register = `${rufloCmd} agent spawn --type '${escapedType}' 2>/dev/null;`;
 
-  let agentCmd: string;
+  let cmd: string;
   if (cliType === 'codex') {
+    const baseCmd = sessionCmd || 'codex';
     // Codex CLI doesn't have --agent flag. Pass the agent role as part of the prompt.
     const prompt = task
       ? `You are a ${agentType} agent. ${task}`
       : `You are a ${agentType} agent. Ask me what I want you to do.`;
     const escapedPrompt = prompt.replace(/'/g, "'\\''");
-    agentCmd = `codex --no-alt-screen '${escapedPrompt}'`;
+    cmd = `${baseCmd} --no-alt-screen '${escapedPrompt}'`;
   } else {
+    const baseCmd = sessionCmd || 'claude';
     // Claude CLI uses --agent to load agent definitions from .claude/agents/
-    agentCmd = task
-      ? `claude --agent '${escapedType}' '${escapedTask}'`
-      : `claude --agent '${escapedType}'`;
+    cmd = task
+      ? `${baseCmd} --agent '${escapedType}' '${escapedTask}'`
+      : `${baseCmd} --agent '${escapedType}'`;
   }
 
-  const base = `${register} ${agentCmd}`;
   if (direct) {
-    return `command bash -c '${base.replace(/'/g, "'\\''")}'`;
+    return `command bash -c '${cmd.replace(/'/g, "'\\''")}'`;
   }
-  return base;
+  return cmd;
 }
 
 /* ================================================================
@@ -393,7 +387,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
   useTmux = msg.useTmux;
   useDtach = msg.useDtach;
   const shell = process.env.SHELL || '/bin/bash';
-  const rufloCmd = msg.rufloCommand || 'npx ruflo@latest';
+  const sessionCmd = msg.sessionCommand || 'claude';
   const cliType = msg.cliType || 'claude';
 
   try {
@@ -424,8 +418,8 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
         });
       }
     } else if (msg.mode === 'agent' && msg.agentType) {
-      // agent mode — launch ruflo with --agent flag
-      const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, rufloCmd, cliType);
+      // agent mode — launch CLI with --agent flag
+      const command = buildAgentCommand(msg.agentType, msg.task, msg.useTmux, sessionCmd, cliType);
       if (msg.useTmux) {
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
         const pp = setupPipePane(msg.sessionId);
@@ -452,9 +446,9 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
         });
       }
     } else {
-      // hivemind mode
+      // session mode
       if (msg.useTmux) {
-        const command = buildHiveMindCommand(msg.task, true, rufloCmd, cliType);
+        const command = buildSessionCommand(msg.task, true, sessionCmd, cliType);
         await tmuxCreate(msg.sessionId, msg.projectPath, msg.cols, msg.rows, command);
         const pp = setupPipePane(msg.sessionId);
         if (pp) {
@@ -467,7 +461,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else if (msg.useDtach) {
-        const command = buildHiveMindCommand(msg.task, false, rufloCmd, cliType);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType);
         await dtachCreate(msg.sessionId, msg.projectPath, command);
         await new Promise(r => setTimeout(r, 100));
         ptyProcess = pty.spawn(shell, ['-c', `dtach -a ${dtachSocket(msg.sessionId)} -Ez`], {
@@ -475,7 +469,7 @@ async function handleSpawn(msg: SpawnMessage): Promise<void> {
           env: sessionEnv(),
         });
       } else {
-        const command = buildHiveMindCommand(msg.task, false, rufloCmd, cliType);
+        const command = buildSessionCommand(msg.task, false, sessionCmd, cliType);
         ptyProcess = pty.spawn(shell, ['-i', '-c', command], {
           name: 'xterm-256color', cols: msg.cols, rows: msg.rows, cwd: msg.projectPath,
           env: sessionEnv(),

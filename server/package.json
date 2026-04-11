@@ -1,13 +1,13 @@
 {
   "name": "@octoally/server",
-  "version": "1.0.60",
+  "version": "1.0.64",
   "description": "OctoAlly backend server — Fastify + SQLite + WebSocket",
   "author": "AI Genius Automations <support@aigeniusautomations.com>",
   "license": "Apache-2.0 WITH Commons-Clause",
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsc && cp -r src/data/agents dist/data/ && cp src/data/statusline.sh dist/data/",
     "start": "env NODE_ENV=production node dist/index.js"
   },
   "dependencies": {

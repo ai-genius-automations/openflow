@@ -26,17 +26,18 @@ import {
   Github,
   Terminal,
   Zap,
-  Download,
-  Brain,
   Bot,
   TerminalSquare,
   Search,
+  AlertTriangle,
 } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { ConfirmModal } from './ConfirmModal';
+import { RufloDeprecationModal } from './RufloDeprecationModal';
+import { StatuslinePromptModal } from './StatuslinePromptModal';
 
 interface ProjectDashboardProps {
-  onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'hivemind' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') => void;
+  onOpenProject: (projectId: string, projectName: string, quickLaunch?: 'session' | 'agent' | 'terminal', cliType?: 'claude' | 'codex') => void;
 }
 
 type ViewState = { mode: 'list' } | { mode: 'add' } | { mode: 'edit'; project: Project };
@@ -138,8 +139,9 @@ function ProjectForm({
   const [name, setName] = useState(project?.name || '');
   const [path, setPath] = useState(project?.path || '');
   const [description, setDescription] = useState(project?.description || '');
+  const [projectColor, setProjectColor] = useState(project?.color || '');
   const [defaultWebUrl, setDefaultWebUrl] = useState(project?.default_web_url || '');
-  const [rufloPrompt, setClaudeFlowPrompt] = useState(project?.ruflo_prompt || '');
+  const [sessionPrompt, setSessionPrompt] = useState(project?.session_prompt || '');
   const [openclawPrompt, setOpenclawPrompt] = useState(project?.openclaw_prompt || '');
   const [claudeMd, setClaudeMd] = useState('');
   const [agentsMd, setAgentsMd] = useState('');
@@ -213,23 +215,9 @@ function ProjectForm({
 
   const createMutation = useMutation({
     mutationFn: () =>
-      api.projects.create({ name, path, description, default_web_url: defaultWebUrl || undefined }),
+      api.projects.create({ name, path, description, default_web_url: defaultWebUrl || undefined, color: projectColor || undefined }),
     onSuccess: async (data) => {
       queryClient.invalidateQueries({ queryKey: ['projects'] });
-      queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
-      if (installRuflo && data.project?.id) {
-        // Keep dialog open, show installing status
-        setRufloSetupStatus('installing');
-        try {
-          await api.projects.rufloInstall(data.project.id, rufloInstallMode);
-          setRufloSetupStatus('done');
-        } catch {
-          setRufloSetupStatus('error');
-        }
-        queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
-        // Brief pause so user sees "done" state
-        await new Promise(r => setTimeout(r, 800));
-      }
       onSubmit();
       if (data.project?.id) {
         setTimeout(() => {
@@ -245,15 +233,17 @@ function ProjectForm({
 
   const updateMutation = useMutation({
     mutationFn: () => {
-      const fields: Record<string, string | null | undefined> = {};
+      const fields: Record<string, string | number | null | undefined> = {};
       if (name !== project!.name) fields.name = name;
       if (description !== (project!.description || '')) fields.description = description;
       if (defaultWebUrl !== (project!.default_web_url || '')) fields.default_web_url = defaultWebUrl || null;
-      if (rufloPrompt !== (project!.ruflo_prompt || ''))
-        fields.ruflo_prompt = rufloPrompt || null;
+      if (sessionPrompt !== (project!.session_prompt || ''))
+        fields.session_prompt = sessionPrompt || null;
       if (openclawPrompt !== (project!.openclaw_prompt || ''))
         fields.openclaw_prompt = openclawPrompt || null;
-      return api.projects.update(project!.id, fields);
+      // Always send color to ensure save works even if only color changed
+      fields.color = projectColor || '';
+      return api.projects.update(project!.id, fields as any);
     },
     onSuccess: async () => {
       const savePath = project!.path;
@@ -274,23 +264,6 @@ function ProjectForm({
   const handleSave = async () => {
     setError('');
     if (mode === 'edit') { updateMutation.mutate(); return; }
-
-    // Add mode — check for ruflo conflicts if toggle is on
-    if (installRuflo && path) {
-      try {
-        // Use a lightweight check: see if .claude/settings.json or CLAUDE.md exist at the path
-        const conflicts = { settingsJson: false, claudeMd: false, agentsMd: false };
-        try { await api.files.read(`${path}/CLAUDE.md`); conflicts.claudeMd = true; } catch {}
-        try { await api.files.read(`${path}/AGENTS.md`); conflicts.agentsMd = true; } catch {}
-        try { await api.files.read(`${path}/.claude/settings.json`); conflicts.settingsJson = true; } catch {}
-
-        if (conflicts.settingsJson || conflicts.claudeMd || conflicts.agentsMd) {
-          setRufloConflicts(conflicts);
-          setRufloConfirmPending(true);
-          return;
-        }
-      } catch {}
-    }
     createMutation.mutate();
   };
 
@@ -302,13 +275,7 @@ function ProjectForm({
 
   const filesLoading = mode === 'edit' && (!!projectPath) && (claudeMdQuery.isLoading || agentsMdQuery.isLoading || settingsQuery.isLoading);
 
-  const [installRuflo, setInstallRuflo] = useState(true);
-  const [rufloConflicts, setRufloConflicts] = useState<{ settingsJson: boolean; claudeMd: boolean; agentsMd: boolean } | null>(null);
-  const [rufloConfirmPending, setRufloConfirmPending] = useState(false);
-  const [rufloInstallMode, setRufloInstallMode] = useState<'merge' | 'overwrite'>('merge');
-  const [rufloSetupStatus, setRufloSetupStatus] = useState<'idle' | 'installing' | 'done' | 'error'>('idle');
-
-  const isPending = createMutation.isPending || updateMutation.isPending || rufloSetupStatus === 'installing';
+  const isPending = createMutation.isPending || updateMutation.isPending;
 
   const [createRepo, setCreateRepo] = useState(false);
   const [repoName, setRepoName] = useState('');
@@ -444,6 +411,30 @@ function ProjectForm({
                   className={inputClass}
                   style={inputStyle}
                 />
+              </div>
+            </div>
+
+            {/* Card Color */}
+            <div>
+              <label className="block text-xs mb-1" style={{ color: 'var(--text-secondary)' }}>Card Color</label>
+              <div className="flex items-center gap-2">
+                {['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1'].map((c) => {
+                  const defaultColors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1'];
+                  const hash = name.split('').reduce((a, ch) => a + ch.charCodeAt(0), 0);
+                  const isActive = projectColor ? projectColor === c : c === defaultColors[hash % defaultColors.length];
+                  return (
+                    <button
+                      key={c}
+                      onClick={() => setProjectColor(c)}
+                      className="w-6 h-6 rounded-full border-2 transition-transform hover:scale-110"
+                      style={{
+                        background: c,
+                        borderColor: isActive ? 'white' : 'transparent',
+                        boxShadow: isActive ? `0 0 0 2px ${c}` : 'none',
+                      }}
+                    />
+                  );
+                })}
               </div>
             </div>
 
@@ -647,10 +638,10 @@ function ProjectForm({
                 {/* Row 1: Session prompts — 2 columns */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="flex flex-col">
-                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>RuFlo Session Prompt</label>
+                    <label className="block text-xs font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Session Prompt</label>
                     <textarea
-                      value={rufloPrompt}
-                      onChange={(e) => setClaudeFlowPrompt(e.target.value)}
+                      value={sessionPrompt}
+                      onChange={(e) => setSessionPrompt(e.target.value)}
                       placeholder="System instructions prepended to every task for this project..."
                       className={`${inputClass} resize-y flex-1`}
                       style={{ ...inputStyle, minHeight: '80px' }}
@@ -798,24 +789,79 @@ function ProjectForm({
               </div>
             )}
 
-            {/* RuFlo toggle — add mode only */}
-            {mode === 'add' && (
-              <label className="flex items-center gap-3 cursor-pointer">
+            {/* Reset Project — always available in edit mode */}
+            {mode === 'edit' && (() => {
+              const [resetting, setResetting] = useState(false);
+              const [resetResult, setResetResult] = useState<string | null>(null);
+              return (
                 <div
-                  onClick={() => setInstallRuflo(!installRuflo)}
-                  className="relative w-10 h-5 rounded-full transition-colors"
-                  style={{ background: installRuflo ? 'var(--accent)' : 'var(--bg-tertiary)', border: '1px solid var(--border)' }}
+                  className="flex items-center justify-between px-4 py-3 rounded-lg border"
+                  style={{ borderColor: '#f59e0b40', background: '#f59e0b10' }}
                 >
-                  <div
-                    className="absolute top-0.5 w-4 h-4 rounded-full transition-transform"
-                    style={{ background: 'white', left: installRuflo ? '20px' : '2px' }}
-                  />
+                  <div className="flex-1 min-w-0">
+                    <p className="text-xs font-medium" style={{ color: '#f59e0b' }}>Reset Project</p>
+                    <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                      Removes .claude/, .codex/, CLAUDE.md, AGENTS.md, and all config files. Claude/Codex will re-initialize with default settings on next use.
+                    </p>
+                    {resetResult && (
+                      <p className="text-[10px] mt-1" style={{ color: resetResult.startsWith('Error') ? '#ef4444' : '#22c55e' }}>
+                        {resetResult}
+                      </p>
+                    )}
+                  </div>
+                  <button
+                    onClick={async (e) => {
+                      e.preventDefault();
+                      if (!confirm(
+                        'This will delete ALL Claude and Codex settings for this project (.claude/, .codex/, CLAUDE.md, AGENTS.md).\n\n' +
+                        'Claude/Codex will ask you to trust the folder again on next use.\n\nContinue?'
+                      )) return;
+                      setResetting(true);
+                      setResetResult(null);
+                      try {
+                        const result = await api.projects.rufloUninstall(project!.id);
+                        // Reset color to blue and clear prompts
+                        await api.projects.update(project!.id, {
+                          session_prompt: null,
+                          openclaw_prompt: null,
+                          color: '#3b82f6',
+                        });
+                        queryClient.invalidateQueries({ queryKey: ['projects'] });
+                        queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
+                        queryClient.invalidateQueries({ queryKey: ['ruflo-disposition'] });
+                        const pp = project!.path;
+                        await Promise.all([
+                          queryClient.invalidateQueries({ queryKey: ['file-read', pp, 'CLAUDE.md'] }),
+                          queryClient.invalidateQueries({ queryKey: ['file-read', pp, 'AGENTS.md'] }),
+                          queryClient.invalidateQueries({ queryKey: ['file-read', pp, '.claude/settings.json'] }),
+                        ]);
+                        setClaudeMd('');
+                        setInitialClaudeMd('');
+                        setSettingsJson('');
+                        setInitialSettingsJson('');
+                        setAgentsMd('');
+                        setInitialAgentsMd('');
+                        setSessionPrompt('');
+                        setOpenclawPrompt('');
+                        setProjectColor('#3b82f6');
+                        setResetResult(result.cleaned.length > 0
+                          ? `Reset complete — removed ${result.cleaned.length} item(s).`
+                          : 'Reset complete — project was already clean.');
+                      } catch (err: any) {
+                        setResetResult(`Error: ${err.message || 'Reset failed'}`);
+                      } finally {
+                        setResetting(false);
+                      }
+                    }}
+                    disabled={resetting}
+                    className="shrink-0 px-3 py-1.5 rounded-lg text-xs font-medium"
+                    style={{ background: '#f59e0b', color: '#000', border: 'none', opacity: resetting ? 0.6 : 1 }}
+                  >
+                    {resetting ? 'Resetting...' : 'Reset'}
+                  </button>
                 </div>
-                <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                  Initialize RuFlo (agents, skills, memory, swarm)
-                </span>
-              </label>
-            )}
+              );
+            })()}
 
             {/* Error */}
             {error && (
@@ -831,7 +877,7 @@ function ProjectForm({
                 style={{ background: 'var(--accent)', color: 'white' }}
               >
                 <Save className="w-4 h-4" />
-                {rufloSetupStatus === 'installing' ? 'Installing RuFlo...' : rufloSetupStatus === 'done' ? 'Done!' : isPending ? 'Saving...' : mode === 'add' ? 'Add Project' : 'Save Changes'}
+                {isPending ? 'Saving...' : mode === 'add' ? 'Add Project' : 'Save Changes'}
               </button>
               <button
                 onClick={onCancel}
@@ -842,41 +888,6 @@ function ProjectForm({
               </button>
             </div>
 
-            {/* RuFlo conflict confirmation */}
-            {rufloConfirmPending && rufloConflicts && (
-              <ConfirmModal
-                title="RuFlo — existing config detected"
-                message={`This project has existing config files:\n${rufloConflicts.settingsJson ? '  - .claude/settings.json\n' : ''}${rufloConflicts.claudeMd ? '  - CLAUDE.md\n' : ''}${rufloConflicts.agentsMd ? '  - AGENTS.md\n' : ''}\nBackups will be created with a .bak extension.\nChoose how to handle existing configuration:`}
-                confirmLabel="Merge & Backup"
-                variant="warning"
-                onConfirm={() => {
-                  setRufloInstallMode('merge');
-                  setRufloConfirmPending(false);
-                  createMutation.mutate();
-                }}
-                onCancel={() => {
-                  setRufloConfirmPending(false);
-                  setRufloConflicts(null);
-                }}
-              >
-                <div className="flex items-center gap-2 mt-3">
-                  <button
-                    onClick={() => {
-                      setRufloInstallMode('overwrite');
-                      setRufloConfirmPending(false);
-                      createMutation.mutate();
-                    }}
-                    className="px-3 py-1.5 rounded-md text-xs font-medium"
-                    style={{ background: 'var(--error)', color: '#fff' }}
-                  >
-                    Overwrite & Backup
-                  </button>
-                  <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-                    Replace all existing config
-                  </span>
-                </div>
-              </ConfirmModal>
-            )}
           </div>
         </div>
       </div>
@@ -1335,64 +1346,50 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
     );
   }, [allProjects, searchQuery]);
 
-  // Claude-flow status for all projects
-  const { data: cfStatusData } = useQuery({
-    queryKey: ['ruflo-status'],
-    queryFn: () => api.projects.rufloStatus(),
-    enabled: projects.length > 0,
-    staleTime: 5_000, // Short cache so install status updates quickly
-  });
+  // Claude-flow status — rufloStatus route removed; use empty data
+  const cfStatusData = undefined as { statuses: Record<string, any> } | undefined;
 
-  // DevCortex status for all projects
-  const { data: dctxStatusData } = useQuery({
-    queryKey: ['devcortex-status'],
-    queryFn: () => api.projects.devcortexStatus(),
-    enabled: projects.length > 0,
+  // Ruflo deprecation — disposition query
+  const { data: dispositionData } = useQuery({
+    queryKey: ['ruflo-disposition'],
+    queryFn: () => api.projects.rufloDisposition(),
     staleTime: 60_000,
   });
+  const [showDeprecationModal, setShowDeprecationModal] = useState(false);
 
-  const [installingId, setInstallingId] = useState<string | null>(null);
-  const [_installError, setInstallError] = useState<string | null>(null);
-  const [rufloConfirm, setRufloConfirm] = useState<{ id: string; conflicts: { settingsJson: boolean; claudeMd: boolean; agentsMd: boolean } } | null>(null);
-  const installMutation = useMutation({
-    mutationFn: async ({ id, mode }: { id: string; mode?: 'merge' | 'overwrite' }) => {
-      // Update ruflo package first if an update is available
-      if (cfStatusData?.rufloUpdateAvailable) {
-        try { await api.projects.rufloUpdate(); } catch {}
-      }
-      return api.projects.rufloInstall(id, mode);
-    },
-    onMutate: ({ id }) => { setInstallingId(id); setInstallError(null); },
-    onSuccess: async (_data, { id }) => {
-      setInstallError(null);
-      // Auto-reinstall DevCortex after ruflo re-init if project has it
-      const dctxStatus = dctxStatusData?.statuses?.[id];
-      if (dctxStatusData?.globalInstalled && dctxStatus?.installed) {
-        try {
-          await api.projects.devcortexInstall(id);
-          queryClient.invalidateQueries({ queryKey: ['devcortex-status'] });
-        } catch { /* DevCortex reinstall failed — ruflo re-init still succeeded */ }
-      }
-    },
-    onError: (err: Error) => setInstallError(err.message || 'Install failed'),
+  // Show deprecation modal once when ruflo detected and user hasn't decided
+  useEffect(() => {
+    if (dispositionData?.disposition === 'undecided' && dispositionData?.rufloDetected) {
+      setShowDeprecationModal(true);
+    }
+  }, [dispositionData]);
+
+  // Statusline prompt — ask once if user wants to install custom status bar
+  const { data: settingsData } = useQuery({
+    queryKey: ['settings'],
+    queryFn: () => api.settings.get(),
+    staleTime: 60_000,
+  });
+  const [showStatuslinePrompt, setShowStatuslinePrompt] = useState(false);
+
+  useEffect(() => {
+    if (settingsData?.settings?.statusline_prompted === 'false' && !showDeprecationModal) {
+      setShowStatuslinePrompt(true);
+    }
+  }, [settingsData, showDeprecationModal]);
+
+  // Uninstall ruflo from a single project
+  const [uninstallingId, setUninstallingId] = useState<string | null>(null);
+  const uninstallMutation = useMutation({
+    mutationFn: (id: string) => api.projects.rufloUninstall(id),
+    onMutate: (id) => setUninstallingId(id),
     onSettled: () => {
-      setInstallingId(null);
+      setUninstallingId(null);
       queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
+      queryClient.invalidateQueries({ queryKey: ['devcortex-status'] });
+      queryClient.invalidateQueries({ queryKey: ['ruflo-disposition'] });
     },
   });
-
-  const handleRufloInstall = async (projectId: string) => {
-    try {
-      const conflicts = await api.projects.rufloCheck(projectId);
-      if (conflicts.settingsJson || conflicts.claudeMd) {
-        setRufloConfirm({ id: projectId, conflicts });
-      } else {
-        installMutation.mutate({ id: projectId });
-      }
-    } catch {
-      installMutation.mutate({ id: projectId });
-    }
-  };
 
   // Sessions — driven by WebSocket invalidation, no polling needed
   const { data: sessionsData } = useQuery({
@@ -1401,15 +1398,15 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
   });
 
   const activeSessionsByProject = useMemo(() => {
-    const map: Record<string, { hivemind: number; terminal: number; agent: number; total: number }> = {};
+    const map: Record<string, { session: number; terminal: number; agent: number; total: number }> = {};
     for (const s of sessionsData?.sessions || []) {
       if (s.project_id && (s.status === 'running' || s.status === 'detached' || s.status === 'pending')) {
-        if (!map[s.project_id]) map[s.project_id] = { hivemind: 0, terminal: 0, agent: 0, total: 0 };
+        if (!map[s.project_id]) map[s.project_id] = { session: 0, terminal: 0, agent: 0, total: 0 };
         const entry = map[s.project_id];
         entry.total++;
         if (s.task === 'Terminal') entry.terminal++;
         else if (s.task.startsWith('Agent (')) entry.agent++;
-        else entry.hivemind++;
+        else entry.session++;
       }
     }
     return map;
@@ -1508,6 +1505,16 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
             >
               GitHub
             </a>
+            <div className="text-center mb-4">
+              <p className="text-[10px] font-medium mb-1" style={{ color: 'var(--text-secondary)' }}>Credits</p>
+              <p className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                Default agents by{' '}
+                <a href="https://github.com/lst97/claude-code-sub-agents" target="_blank" rel="noopener noreferrer" className="hover:underline" style={{ color: 'var(--accent)' }}>
+                  lst97/claude-code-sub-agents
+                </a>
+                {' '}(MIT)
+              </p>
+            </div>
             <button
               onClick={() => setShowAbout(false)}
               className="px-4 py-2 rounded-lg text-sm mb-4"
@@ -1548,7 +1555,7 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                     queryClient.invalidateQueries({ queryKey: ['sessions'] }),
                     queryClient.invalidateQueries({ queryKey: ['git-status'] }),
                     queryClient.invalidateQueries({ queryKey: ['ruflo-status'] }),
-                    queryClient.invalidateQueries({ queryKey: ['devcortex-status'] }),
+                    queryClient.invalidateQueries({ queryKey: ['ruflo-disposition'] }),
                   ]).finally(() => {
                     setLastRefreshed(new Date());
                     setRefreshing(false);
@@ -1605,6 +1612,29 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
         {/* Project cards grid */}
         <div className="pb-6">
         <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
+          {/* Skip permissions all toggle */}
+          {projects.length > 0 && (
+            <div className="flex items-center justify-end gap-3 mb-3">
+              <label className="flex items-center gap-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={projects.length > 0 && projects.every(p => !!p.skip_permissions)}
+                  onChange={async (e) => {
+                    try {
+                      await api.projects.setSkipPermissionsAll(e.target.checked);
+                      queryClient.invalidateQueries({ queryKey: ['projects'] });
+                    } catch { /* ignore */ }
+                  }}
+                  className="w-3 h-3 rounded accent-orange-500"
+                />
+                <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                  Skip permissions (all projects)
+                </span>
+              </label>
+            </div>
+          )}
+        </div>
+        <div className="mx-auto px-6" style={{ maxWidth: '82rem' }}>
         {loadingProjects ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="w-6 h-6 animate-spin" style={{ color: 'var(--accent)' }} />
@@ -1631,32 +1661,20 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
           <div className="flex flex-col gap-6">
             {(() => {
               const cfStatuses = cfStatusData?.statuses || {};
-              const dctxStatuses = dctxStatusData?.statuses || {};
-              const dctxGlobal = dctxStatusData?.globalInstalled ?? false;
+              const disposition = dispositionData?.disposition || 'undecided';
 
-              // Categorize: DevCortex (includes ruflo) → RuFlo only → Other
-              const devcortexProjects = projects.filter(p => dctxGlobal && dctxStatuses[p.id]?.installed);
-              const rufloOnlyProjects = projects.filter(p => cfStatuses[p.id]?.installed && !(dctxGlobal && dctxStatuses[p.id]?.installed));
-              const otherProjects = projects.filter(p => !cfStatuses[p.id]?.installed && !(dctxGlobal && dctxStatuses[p.id]?.installed));
-
-              const groups: { label: string; color: string; icon: typeof Folder; items: typeof projects }[] = [];
-              if (devcortexProjects.length > 0) groups.push({ label: 'DevCortex Projects', color: '#a855f7', icon: Brain, items: devcortexProjects });
-              if (rufloOnlyProjects.length > 0) groups.push({ label: 'RuFlo Projects', color: '#60a5fa', icon: Zap, items: rufloOnlyProjects });
-              if (otherProjects.length > 0) groups.push({ label: 'Projects', color: 'var(--text-secondary)', icon: Folder, items: otherProjects });
-              if (groups.length === 0) groups.push({ label: 'Projects', color: 'var(--text-secondary)', icon: Folder, items: projects });
-
-              return groups.map((group, gi) => (
-                <div key={gi}>
+              return (
+                <div>
                   <div className="flex items-center gap-2 mb-3">
-                    <group.icon className="w-4 h-4" style={{ color: group.color }} />
-                    <h3 className="text-sm font-semibold" style={{ color: group.color }}>{group.label}</h3>
-                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>({group.items.length})</span>
+                    <Folder className="w-4 h-4" style={{ color: 'var(--text-secondary)' }} />
+                    <h3 className="text-sm font-semibold" style={{ color: 'var(--text-secondary)' }}>Projects</h3>
+                    <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>({projects.length})</span>
                     <div className="flex-1 h-px ml-2" style={{ background: 'var(--border)' }} />
                   </div>
                   <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-                    {group.items.map((project) => {
+                    {projects.map((project) => {
               const cfStatus = cfStatuses[project.id];
-              const isInstalling = installingId === project.id;
+              const isUninstalling = uninstallingId === project.id;
 
               return (
                 <div
@@ -1665,108 +1683,61 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                   style={{ background: 'var(--bg-secondary)', borderColor: 'var(--border)' }}
                   onClick={() => onOpenProject(project.id, project.name)}
                 >
-                  {/* RuFlo / DevCortex status bar — DevCortex supersedes RuFlo (it includes it) */}
-                  {(() => {
-                    const hasDctx = dctxGlobal && dctxStatuses[project.id]?.installed;
-                    const hasRuflo = cfStatus?.installed;
-                    if (!hasRuflo && !hasDctx) return null;
-                    const color = hasDctx ? '#a855f7' : '#60a5fa';
-                    const label = hasDctx ? 'DevCortex' : 'RuFlo';
-                    const Icon = hasDctx ? Brain : Zap;
-                    const version = hasDctx ? dctxStatuses[project.id]?.version : cfStatus?.version;
-                    return (
+                  {/* Ruflo deprecation notice — only shown before user has decided (undecided disposition) */}
+                  {cfStatus?.installed && disposition === 'undecided' && (
                     <div
                       className="flex items-center gap-1.5 px-4 py-2"
-                      style={{ background: `${color}15`, borderBottom: `1px solid ${color}40` }}
+                      style={{ background: '#f59e0b15', borderBottom: '1px solid #f59e0b40' }}
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      <Icon className="w-3 h-3 shrink-0" style={{ color }} />
-                      <span className="text-xs font-semibold truncate" style={{ color }}>
-                        {label}
+                      <AlertTriangle className="w-3 h-3 shrink-0" style={{ color: '#f59e0b' }} />
+                      <span className="text-xs font-semibold truncate" style={{ color: '#f59e0b' }}>
+                        RuFlo detected
                       </span>
-                      {version && (
-                        <span className="text-[10px] font-mono shrink-0" style={{ color, opacity: 0.7 }}>
-                          v{version}
-                        </span>
-                      )}
-                      {cfStatus?.installed && !cfStatus?.codexReady && (
-                        <button
-                          className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap animate-pulse"
-                          style={{ background: '#10b98115', color: '#10b981', border: '1px solid #10b98140' }}
-                          title="Re-init to enable Codex CLI support (creates AGENTS.md)"
-                          onClick={(e) => { e.stopPropagation(); handleRufloInstall(project.id); }}
-                        >
-                          + Codex
-                        </button>
-                      )}
-                      {cfStatusData?.rufloUpdateAvailable && cfStatus?.installed && (
-                        <button
-                          className="shrink-0 px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap animate-pulse"
-                          style={{ background: '#f59e0b20', color: '#f59e0b', border: '1px solid #f59e0b44' }}
-                          title={`RuFlo update available: v${cfStatusData.rufloVersion} → v${cfStatusData.rufloLatestVersion} — click to update`}
-                          onClick={(e) => { e.stopPropagation(); handleRufloInstall(project.id); }}
-                        >
-                          Update
-                        </button>
-                      )}
-                      {cfStatus?.sonaPatchOutdated && !cfStatusData?.rufloUpdateAvailable && (
-                        <button
-                          className="shrink-0 ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap animate-pulse"
-                          style={{ background: '#f59e0b20', color: '#f59e0b', border: '1px solid #f59e0b44' }}
-                          title="SONA learning patch outdated — click to re-init RuFlo and update"
-                          onClick={(e) => { e.stopPropagation(); handleRufloInstall(project.id); }}
-                        >
-                          Re-init
-                        </button>
-                      )}
-                      {(() => {
-                        const counts = activeSessionsByProject[project.id];
-                        if (!counts || counts.total === 0) return null;
-                        const parts: string[] = [];
-                        if (counts.hivemind > 0) parts.push(`${counts.hivemind} hive`);
-                        if (counts.agent > 0) parts.push(`${counts.agent} agent`);
-                        if (counts.terminal > 0) parts.push(`${counts.terminal} term`);
-                        const badgeBg = counts.total <= 2 ? '#22c55e20' : counts.total <= 4 ? '#f59e0b20' : '#ef444420';
-                        const badgeText = counts.total <= 2 ? '#22c55e' : counts.total <= 4 ? '#f59e0b' : '#ef4444';
-                        return (
-                          <span
-                            className="shrink-0 ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
-                            style={{ background: badgeBg, color: badgeText }}
-                            title={parts.join(', ')}
-                          >
-                            {parts.join(' / ')}
-                          </span>
-                        );
-                      })()}
+                      <button
+                        className="shrink-0 ml-auto px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
+                        style={{ background: '#ef444420', color: '#ef4444', border: '1px solid #ef444440' }}
+                        title="Remove RuFlo artifacts from this project"
+                        disabled={isUninstalling}
+                        onClick={() => uninstallMutation.mutate(project.id)}
+                      >
+                        {isUninstalling ? 'Removing...' : 'Uninstall'}
+                      </button>
                     </div>
-                    );
-                  })()}
+                  )}
 
-                  <div className="p-5 flex flex-col gap-3 flex-1">
-                    <div className="flex items-start justify-between">
-                      <div className="min-w-0 flex-1">
-                        <h3 className="text-sm font-semibold truncate" style={{ color: 'var(--text-primary)' }}>
-                          {project.name}
-                        </h3>
-                        <p className="text-xs font-mono truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
-                          {project.path}
-                        </p>
-                      </div>
-                      {/* Session badge for projects without RuFlo bar */}
-                      {!cfStatus?.installed && (() => {
-                        const counts = activeSessionsByProject[project.id];
-                        if (!counts || counts.total === 0) return null;
-                        const badgeBg = counts.total <= 2 ? '#22c55e20' : counts.total <= 4 ? '#f59e0b20' : '#ef444420';
-                        const badgeText = counts.total <= 2 ? '#22c55e' : counts.total <= 4 ? '#f59e0b' : '#ef4444';
-                        return (
+                  {/* Title bar */}
+                  {(() => {
+                    const defaultColors = ['#3b82f6', '#8b5cf6', '#06b6d4', '#10b981', '#f59e0b', '#ef4444', '#ec4899', '#6366f1'];
+                    const hash = project.name.split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+                    const color = project.color || defaultColors[hash % defaultColors.length];
+                    const counts = activeSessionsByProject[project.id];
+                    return (
+                      <div
+                        className="flex items-center justify-between px-4 py-2.5"
+                        style={{ background: `${color}15`, borderBottom: `1px solid ${color}30` }}
+                      >
+                        <div className="min-w-0 flex-1">
+                          <h3 className="text-sm font-semibold truncate" style={{ color }}>
+                            {project.name}
+                          </h3>
+                          <p className="text-[10px] font-mono truncate mt-0.5" style={{ color: 'var(--text-secondary)' }}>
+                            {project.path}
+                          </p>
+                        </div>
+                        {counts && counts.total > 0 && (
                           <span
                             className="shrink-0 ml-2 px-2 py-0.5 rounded-full text-[10px] font-bold whitespace-nowrap"
-                            style={{ background: badgeBg, color: badgeText }}
+                            style={{ background: `${color}20`, color }}
                           >
                             {counts.total} active
                           </span>
-                        );
-                      })()}
-                    </div>
+                        )}
+                      </div>
+                    );
+                  })()}
+
+                  <div className="p-5 pt-3 flex flex-col gap-3 flex-1">
 
                     {project.description && (
                       <p className="text-xs line-clamp-2" style={{ color: 'var(--text-secondary)' }}>
@@ -1779,17 +1750,35 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                       <GitInfoBadge projectPath={project.path} />
                     </div>
 
+                    {/* Skip permissions toggle */}
+                    <label
+                      className="flex items-center gap-1.5 cursor-pointer select-none"
+                      onClick={(e) => e.stopPropagation()}
+                      title="Launch Claude sessions with --dangerously-skip-permissions (auto-approve all tool calls)"
+                    >
+                      <input
+                        type="checkbox"
+                        checked={!!project.skip_permissions}
+                        onChange={async (e) => {
+                          try {
+                            await api.projects.update(project.id, { skip_permissions: e.target.checked ? 1 : 0 });
+                            queryClient.invalidateQueries({ queryKey: ['projects'] });
+                          } catch { /* ignore */ }
+                        }}
+                        className="w-3 h-3 rounded accent-orange-500"
+                      />
+                      <span className="text-[10px]" style={{ color: 'var(--text-secondary)' }}>
+                        Skip permissions
+                      </span>
+                    </label>
+
                     {/* Row 1: Launch buttons — dual icons, type-colored, stretched */}
-                    {(() => {
-                      const codexOk = cfStatus?.codexReady ?? false;
-                      const codexTitle = codexOk ? undefined : 'Codex not initialized — re-init RuFlo to enable';
-                      return (
                     <div className="grid grid-cols-5 gap-1 mt-auto pt-1" onClick={(e) => e.stopPropagation()}>
                       <button
-                        onClick={() => onOpenProject(project.id, project.name, 'hivemind', 'claude')}
+                        onClick={() => onOpenProject(project.id, project.name, 'session', 'claude')}
                         className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
                         style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa' }}
-                        title="Claude Hive Mind"
+                        title="Claude Session"
                       >
                         <ClaudeIcon className="w-3 h-3" />
                         <Zap className="w-3 h-3" />
@@ -1804,21 +1793,19 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                         <Bot className="w-3 h-3" />
                       </button>
                       <button
-                        onClick={() => codexOk && onOpenProject(project.id, project.name, 'hivemind', 'codex')}
-                        disabled={!codexOk}
+                        onClick={() => onOpenProject(project.id, project.name, 'session', 'codex')}
                         className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
-                        style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa', opacity: codexOk ? 1 : 0.35, cursor: codexOk ? 'pointer' : 'not-allowed' }}
-                        title={codexTitle || 'Codex Hive Mind'}
+                        style={{ background: '#3b82f610', borderColor: '#3b82f630', color: '#60a5fa' }}
+                        title="Codex Session"
                       >
                         <CodexIcon className="w-3 h-3" />
                         <Zap className="w-3 h-3" />
                       </button>
                       <button
-                        onClick={() => codexOk && onOpenProject(project.id, project.name, 'agent', 'codex')}
-                        disabled={!codexOk}
+                        onClick={() => onOpenProject(project.id, project.name, 'agent', 'codex')}
                         className="flex items-center justify-center gap-0.5 p-1.5 rounded-lg border text-xs"
-                        style={{ background: '#ef444410', borderColor: '#ef444430', color: '#ef4444', opacity: codexOk ? 1 : 0.35, cursor: codexOk ? 'pointer' : 'not-allowed' }}
-                        title={codexTitle || 'Codex Agent'}
+                        style={{ background: '#ef444410', borderColor: '#ef444430', color: '#ef4444' }}
+                        title="Codex Agent"
                       >
                         <CodexIcon className="w-3 h-3" />
                         <Bot className="w-3 h-3" />
@@ -1832,10 +1819,8 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                         <TerminalSquare className="w-3.5 h-3.5" />
                       </button>
                     </div>
-                      );
-                    })()}
-                    {/* Row 2: Utility buttons — stretched */}
-                    <div className="grid gap-1" style={{ gridTemplateColumns: !cfStatus?.installed ? 'repeat(6, 1fr)' : 'repeat(5, 1fr)' }} onClick={(e) => e.stopPropagation()}>
+                    {/* Row 2: Utility buttons */}
+                    <div className="grid grid-cols-4 gap-1" onClick={(e) => e.stopPropagation()}>
                       <button
                         onClick={() => api.openFolder(project.path)}
                         className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
@@ -1860,36 +1845,6 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                       >
                         <Pencil className="w-3.5 h-3.5" />
                       </button>
-                      {cfStatus?.installed && (
-                        <button
-                          onClick={() => handleRufloInstall(project.id)}
-                          disabled={isInstalling}
-                          className="flex items-center justify-center gap-1 p-1.5 rounded-lg border text-xs"
-                          style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: isInstalling ? '#facc15' : 'var(--text-secondary)' }}
-                          title={isInstalling ? 'Re-initializing RuFlo...' : 'Re-init RuFlo (update agents + memory)'}
-                        >
-                          {isInstalling ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <RefreshCw className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      )}
-                      {!cfStatus?.installed && (
-                        <button
-                          onClick={() => handleRufloInstall(project.id)}
-                          disabled={isInstalling}
-                          className="flex items-center justify-center gap-1 p-1.5 rounded-lg border text-xs"
-                          style={{ background: '#3b82f610', borderColor: '#3b82f630', color: isInstalling ? '#facc15' : '#60a5fa' }}
-                          title={isInstalling ? 'Installing RuFlo...' : 'Install RuFlo'}
-                        >
-                          {isInstalling ? (
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                          ) : (
-                            <Download className="w-3.5 h-3.5" />
-                          )}
-                        </button>
-                      )}
                       <button
                         onClick={() => setConfirmDeleteId(project.id)}
                         className="flex items-center justify-center p-1.5 rounded-lg border text-xs"
@@ -1905,7 +1860,7 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
                     })}
                   </div>
                 </div>
-              ));
+              );
             })()}
           </div>
         )}
@@ -1927,34 +1882,16 @@ export function ProjectDashboard({ onOpenProject }: ProjectDashboardProps) {
         />
       )}
 
-      {rufloConfirm && (
-        <ConfirmModal
-          title="Install / Re-init RuFlo"
-          message={`This project has existing config files:\n${rufloConfirm.conflicts.settingsJson ? '• .claude/settings.json\n' : ''}${rufloConfirm.conflicts.claudeMd ? '• CLAUDE.md\n' : ''}${rufloConfirm.conflicts.agentsMd ? '• AGENTS.md\n' : ''}\nBackups will be created with a .bak extension.\nChoose how to handle existing configuration:`}
-          confirmLabel="Merge & Backup"
-          variant="warning"
-          onConfirm={() => {
-            installMutation.mutate({ id: rufloConfirm.id, mode: 'merge' });
-            setRufloConfirm(null);
-          }}
-          onCancel={() => setRufloConfirm(null)}
-        >
-          <div className="flex items-center gap-2 mt-3">
-            <button
-              onClick={() => {
-                installMutation.mutate({ id: rufloConfirm.id, mode: 'overwrite' });
-                setRufloConfirm(null);
-              }}
-              className="px-3 py-1.5 rounded-md text-xs font-medium"
-              style={{ background: 'var(--error)', color: '#fff' }}
-            >
-              Overwrite & Backup
-            </button>
-            <span className="text-xs" style={{ color: 'var(--text-secondary)' }}>
-              Replace all existing config
-            </span>
-          </div>
-        </ConfirmModal>
+      {showDeprecationModal && (
+        <RufloDeprecationModal
+          onClose={() => setShowDeprecationModal(false)}
+        />
+      )}
+
+      {showStatuslinePrompt && !showDeprecationModal && (
+        <StatuslinePromptModal
+          onClose={() => setShowStatuslinePrompt(false)}
+        />
       )}
 
     </div>

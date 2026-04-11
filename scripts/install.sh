@@ -587,14 +587,11 @@ fi
 
 # --- Step 5b: Install octoally shell function ----------------------------
 
-# Shell function for launching hivemind sessions from the terminal with:
-# - dtach persistence (session survives terminal close)
-# - Process cleanup on exit (kills spawned daemons)
-# - Sidecar files for OctoAlly dashboard adoption
+# Shell function for launching Claude Code sessions from the terminal.
 # Works in bash and zsh, on Linux and macOS.
 
-OCTOALLY_FUNC_MARKER="# OctoAlly hivemind launcher function"
-OCTOALLY_FUNC_END="# end-octoally-hivemind"
+OCTOALLY_FUNC_MARKER="# OctoAlly session launcher function"
+OCTOALLY_FUNC_END="# end-octoally-session"
 OCTOALLY_FUNC_BODY='octoally() {
   local DEFAULT_PROMPT="start up and then ask me what I want you to do. DO NOT DO ANYTHING ELSE, NO TASKS! Just initialize and then prompt me"
   local prompt="${*:-$DEFAULT_PROMPT}"
@@ -603,113 +600,7 @@ OCTOALLY_FUNC_BODY='octoally() {
     echo "Note: Claude Code always prompts for workspace trust when run from your home directory. cd into a project to skip this."
   fi
 
-  # Resolve ruflo-run.sh (shared cache or npx fallback)
-  local RUFLO_RUN="$HOME/.octoally/ruflo-run.sh"
-  if [ ! -f "$RUFLO_RUN" ]; then
-    RUFLO_RUN="$HOME/.hivecommand/ruflo-run.sh"
-  fi
-  if [ ! -f "$RUFLO_RUN" ]; then
-    echo "ruflo-run.sh not found. Using npx (slower)."
-    RUFLO_RUN=""
-  fi
-
-  _oa_run_ruflo() {
-    if [ -n "$RUFLO_RUN" ]; then
-      bash "$RUFLO_RUN" "$@"
-    else
-      npx ruflo@latest "$@"
-    fi
-  }
-
-  # Check for dtach — fall back to direct mode if missing
-  if ! command -v dtach &>/dev/null; then
-    echo "dtach not found, running without session persistence."
-    local before=$(pgrep -f "cli.js daemon" 2>/dev/null | sort)
-    local _oa_cleaned=0
-    _oa_cleanup() {
-      [ "$_oa_cleaned" = "1" ] && return
-      _oa_cleaned=1
-      echo ""
-      echo "Cleaning up hive-mind processes..."
-      local after=$(pgrep -f "cli.js daemon" 2>/dev/null | sort)
-      local new_daemons=$(comm -13 <(echo "$before") <(echo "$after"))
-      for pid in $new_daemons; do
-        pkill -P "$pid" 2>/dev/null
-        kill "$pid" 2>/dev/null
-      done
-      sleep 1
-      for pid in $new_daemons; do
-        kill -9 "$pid" 2>/dev/null
-      done
-      trap - EXIT INT TERM HUP
-    }
-    trap _oa_cleanup EXIT INT TERM HUP
-    _oa_run_ruflo hive-mind spawn "$prompt" --claude
-    _oa_cleanup
-    return
-  fi
-
-  # --- dtach mode: session survives terminal close ---
-  local sid="$(date +%s)-$$"
-  local sock="/tmp/hivemind-${sid}.sock"
-
-  # Write sidecar files for OctoAlly dashboard discovery/adoption
-  printf '\''%s\n'\'' "$(pwd)" > "/tmp/hivemind-${sid}.info"
-  printf '\''%s\n'\'' "$(date -Iseconds)" >> "/tmp/hivemind-${sid}.info"
-  printf '\''%s'\'' "$prompt" > "/tmp/hivemind-${sid}.prompt"
-
-  # Write inner script (cleanup lives inside dtach so it works after detach)
-  local inner="/tmp/hivemind-${sid}.run"
-  cat > "$inner" <<'\''RUNEOF'\''
-#!/bin/bash
-SOCK="$1"; shift
-PROMPT_FILE="${SOCK%.sock}.prompt"
-INFO_FILE="${SOCK%.sock}.info"
-PROMPT="$(cat "$PROMPT_FILE" 2>/dev/null)"
-
-before=$(pgrep -f "cli.js daemon" 2>/dev/null | sort)
-_cleaned=0
-_cleanup() {
-  [ "$_cleaned" = "1" ] && return; _cleaned=1
-  echo ""; echo "Cleaning up hive-mind processes..."
-  after=$(pgrep -f "cli.js daemon" 2>/dev/null | sort)
-  for pid in $(comm -13 <(echo "$before") <(echo "$after")); do
-    pkill -P "$pid" 2>/dev/null; kill "$pid" 2>/dev/null
-  done
-  sleep 1
-  for pid in $(comm -13 <(echo "$before") <(echo "$after")); do
-    kill -9 "$pid" 2>/dev/null
-  done
-  rm -f "$SOCK" "$PROMPT_FILE" "$INFO_FILE" "$0"
-  trap - EXIT INT TERM
-}
-trap _cleanup EXIT INT TERM
-
-RUFLO_RUN="$HOME/.octoally/ruflo-run.sh"
-if [ ! -f "$RUFLO_RUN" ]; then
-  RUFLO_RUN="$HOME/.hivecommand/ruflo-run.sh"
-fi
-if [ -f "$RUFLO_RUN" ]; then
-  bash "$RUFLO_RUN" hive-mind spawn "$PROMPT" --claude
-else
-  npx ruflo@latest hive-mind spawn "$PROMPT" --claude
-fi
-_cleanup
-RUNEOF
-  chmod +x "$inner"
-
-  # Create dtach session in background, then attach
-  dtach -n "$sock" -Ez bash "$inner" "$sock"
-  sleep 0.2
-  dtach -a "$sock" -Ez
-
-  # If socket still exists after attach returns, session was detached (not exited)
-  if [ -S "$sock" ]; then
-    echo ""
-    echo "Session detached — still running in background."
-    echo "Reattach: dtach -a $sock -Ez"
-    echo "Or adopt in OctoAlly dashboard."
-  fi
+  claude "$prompt"
 } '"$OCTOALLY_FUNC_END"
 
 # Cross-platform sed -i (BSD sed on macOS requires -i '', GNU sed does not)
@@ -721,43 +612,42 @@ _sed_i() {
   fi
 }
 
-# Legacy markers for cleanup
-LEGACY_FUNC_MARKER="# HiveCommand hivemind launcher function"
-LEGACY_FUNC_END="# end-hivecommand-hivemind"
+# Legacy markers for cleanup (old hivemind versions)
+LEGACY_MARKERS=(
+  "# HiveCommand hivemind launcher function|# end-hivecommand-hivemind"
+  "# OctoAlly hivemind launcher function|# end-octoally-hivemind"
+)
 
 _install_shell_func() {
   local RC_FILE="$1"
   [ ! -f "$RC_FILE" ] && return
 
-  # Remove legacy HiveCommand version if exists
-  if grep -q "$LEGACY_FUNC_MARKER" "$RC_FILE" 2>/dev/null; then
-    if grep -q "$LEGACY_FUNC_END" "$RC_FILE" 2>/dev/null; then
-      _sed_i "/$LEGACY_FUNC_MARKER/,/$LEGACY_FUNC_END/d" "$RC_FILE"
-    else
-      _sed_i "/$LEGACY_FUNC_MARKER/,/^}/d" "$RC_FILE"
+  # Remove all legacy versions (HiveCommand + old OctoAlly hivemind)
+  for marker_pair in "${LEGACY_MARKERS[@]}"; do
+    local START="${marker_pair%%|*}"
+    local END="${marker_pair##*|}"
+    if grep -q "$START" "$RC_FILE" 2>/dev/null; then
+      if grep -q "$END" "$RC_FILE" 2>/dev/null; then
+        _sed_i "/$START/,/$END/d" "$RC_FILE"
+      else
+        _sed_i "/$START/,/^}/d" "$RC_FILE"
+      fi
     fi
-  fi
-  # Self-heal legacy orphaned tails
-  if grep -q "$LEGACY_FUNC_END" "$RC_FILE" 2>/dev/null && \
-     ! grep -q "$LEGACY_FUNC_MARKER" "$RC_FILE" 2>/dev/null; then
-    _sed_i "/^trap _cleanup EXIT INT TERM/,/$LEGACY_FUNC_END/d" "$RC_FILE"
-    _sed_i '/^$/N;/^\n$/N;/^\n\n$/N;/^\n\n\n$/d' "$RC_FILE"
-  fi
+    # Self-heal orphaned tails
+    if grep -q "$END" "$RC_FILE" 2>/dev/null && \
+       ! grep -q "$START" "$RC_FILE" 2>/dev/null; then
+      _sed_i "/^trap _cleanup EXIT INT TERM/,/$END/d" "$RC_FILE"
+      _sed_i '/^$/N;/^\n$/N;/^\n\n$/N;/^\n\n\n$/d' "$RC_FILE"
+    fi
+  done
 
-  # Remove old OctoAlly version if exists (uses end-marker for safe removal)
+  # Remove old OctoAlly session version if exists
   if grep -q "$OCTOALLY_FUNC_MARKER" "$RC_FILE" 2>/dev/null; then
     if grep -q "$OCTOALLY_FUNC_END" "$RC_FILE" 2>/dev/null; then
       _sed_i "/$OCTOALLY_FUNC_MARKER/,/$OCTOALLY_FUNC_END/d" "$RC_FILE"
     else
       _sed_i "/$OCTOALLY_FUNC_MARKER/,/^}/d" "$RC_FILE"
     fi
-  fi
-
-  # Self-heal: remove orphaned tails left by buggy earlier installers
-  if grep -q "$OCTOALLY_FUNC_END" "$RC_FILE" 2>/dev/null && \
-     ! grep -q "$OCTOALLY_FUNC_MARKER" "$RC_FILE" 2>/dev/null; then
-    _sed_i "/^trap _cleanup EXIT INT TERM/,/$OCTOALLY_FUNC_END/d" "$RC_FILE"
-    _sed_i '/^$/N;/^\n$/N;/^\n\n$/N;/^\n\n\n$/d' "$RC_FILE"
   fi
 
   echo "" >> "$RC_FILE"
@@ -971,7 +861,7 @@ if [ "$DESKTOP_INSTALLED_NOW" = true ]; then
 fi
 echo ""
 echo -e "  ${BOLD}Commands:${NC}"
-echo "    octoally                   Launch hivemind session"
+echo "    octoally                   Launch Claude Code session"
 echo "    octoally status            Check status"
 echo "    octoally stop / start      Stop or start the server"
 echo "    octoally update            Update to latest release"

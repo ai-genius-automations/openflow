@@ -1,7 +1,7 @@
 import { FastifyPluginAsync } from 'fastify';
 import {
   attachTerminal, writeToSession, resizeSession, reconnectSession,
-  getPendingSpawn, consumePendingSpawn, spawnClaudeFlow, spawnTerminal, spawnAdopt, spawnAgent,
+  getPendingSpawn, consumePendingSpawn, spawnSession, spawnTerminal, spawnAdopt, spawnAgent,
   sendReplay,
 } from '../services/session-manager.js';
 import { getDb } from '../db/index.js';
@@ -60,7 +60,7 @@ export const terminalRoutes: FastifyPluginAsync = async (app) => {
               } else if (info.mode === 'agent' && info.agentType) {
                 await spawnAgent(sessionId, info.projectPath, info.task, info.agentType, msg.cols, msg.rows, info.cliType);
               } else {
-                await spawnClaudeFlow(sessionId, info.projectPath, info.task, msg.cols, msg.rows, info.cliType);
+                await spawnSession(sessionId, info.projectPath, info.task, msg.cols, msg.rows, info.cliType);
               }
               const attached = attachTerminal(sessionId, socket);
               if (!attached) {

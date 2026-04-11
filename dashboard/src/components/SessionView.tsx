@@ -169,7 +169,7 @@ export function SessionView({ sessionId, projectPath, projectId: _projectId, onE
     try {
       const result = await api.sessions.create({
         project_path: projectPath,
-        task: 'Interactive ruflo session',
+        task: 'Interactive session',
       });
       const newId = result.session.id;
       const label = `Terminal ${terminalInstances.length + 1}`;
@@ -205,7 +205,7 @@ export function SessionView({ sessionId, projectPath, projectId: _projectId, onE
       // Otherwise create a new session
       const result = await api.sessions.create({
         project_path: projectPath,
-        task: 'Interactive ruflo session',
+        task: 'Interactive session',
       });
       const newId = result.session.id;
       setTerminalInstances((prev) =>

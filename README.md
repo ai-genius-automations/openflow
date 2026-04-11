@@ -5,7 +5,7 @@
   </p>
   <p align="center">
     The dashboard for Claude Code &amp; OpenAI Codex. Launch, monitor, and manage AI coding sessions<br>
-    with <a href="https://github.com/ruvnet/ruflo">RuFlo</a> multi-agent orchestration — all from one place.
+    with built-in agents and specialist workflows — all from one place.
   </p>
 </p>
 
@@ -19,7 +19,7 @@
 
 ---
 
-> **OctoAlly** is a local-first orchestration dashboard for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), [OpenAI Codex](https://github.com/openai/codex), and [RuFlo](https://github.com/ruvnet/ruflo). Run multi-agent hive-mind sessions, single-agent workflows, and interactive terminals — with both Claude and Codex CLIs — all from a beautiful web UI with real-time streaming.
+> **OctoAlly** is a local-first orchestration dashboard for [Claude Code](https://docs.anthropic.com/en/docs/claude-code) and [OpenAI Codex](https://github.com/openai/codex). Run agent sessions, specialist workflows, and interactive terminals — with both Claude and Codex CLIs — all from a beautiful web UI with real-time streaming.
 
 ---
 
@@ -29,17 +29,17 @@
 <img src="docs/screenshots/active-sessions.png" alt="Active Sessions Grid" width="100%">
 </p>
 
-**Active Sessions Grid** — Monitor all your AI coding sessions at a glance. The grid view shows every running session across all projects — hive-mind agents, solo Claude Code sessions, and terminals — each with live-streaming output. Click any cell to expand, or use the column controls to fit your screen.
+**Active Sessions Grid** — Monitor all your AI coding sessions at a glance. The grid view shows every running session across all projects — agent sessions, Claude Code sessions, and terminals — each with live-streaming output. Click any cell to expand, or use the column controls to fit your screen.
 
 <table>
 <tr>
 <td width="50%">
 <img src="docs/screenshots/projects.png" alt="Project Management">
-<p><b>Project Management</b> — Organize all your projects in one place. Add project folders, track RuFlo status, manage git repos and branches, and launch sessions directly from the project card. Each project gets its own configuration and session history.</p>
+<p><b>Project Management</b> — Organize all your projects in one place. Add project folders, manage git repos and branches, and launch sessions directly from the project card. Each project gets its own configuration, color theme, and session history.</p>
 </td>
 <td width="50%">
-<img src="docs/screenshots/hivemind.png" alt="Hive-Mind Session">
-<p><b>Hive-Mind Session</b> — Multi-agent orchestration powered by RuFlo. A coordinator agent breaks your objective into subtasks, delegates to specialized workers, and uses Byzantine consensus to merge results. Shared memory and HNSW vector search let agents build on each other's work.</p>
+<img src="docs/screenshots/hivemind.png" alt="Agent Session">
+<p><b>Agent Session</b> — Launch specialist agents for targeted tasks. Choose from 36 built-in agents covering development, code review, testing, security, infrastructure, data engineering, and more. Each agent runs with focused tools and expertise for its domain.</p>
 </td>
 </tr>
 <tr>
@@ -59,7 +59,7 @@
 - **Reconnect anytime** — Close a tab, restart the server, even reboot — every session is backed by tmux and persists. Reconnect and pick up exactly where you left off with full scrollback.
 - **Pop out & adopt back** — Open any session in your system terminal (`tmux attach`), work with your favorite tools, then bring it back into the dashboard. No lock-in.
 - **Voice dictation** — Speak your instructions using local Whisper STT (no cloud, no data leaves your machine) or cloud APIs like OpenAI/Groq. API keys are encrypted at rest with AES-256-GCM.
-- **Per-project agents** — Define custom agent personas in `.claude/agents/*.md` and launch them from the dashboard. Each project gets its own RuFlo config and agent definitions.
+- **36 built-in agents** — Ships with specialist agents for frontend, backend, security, testing, DevOps, data, and more. Define custom agents in `.claude/agents/*.md` and launch them from the dashboard.
 - **Dual CLI support** — Launch sessions with either Claude Code or OpenAI Codex. Each session tracks which CLI it uses, with branded icons and separate configuration.
 
 ---
@@ -67,7 +67,7 @@
 ## Features
 
 - **Active Sessions Grid** — See every running session across all projects in a live-updating grid with real-time streaming output
-- **Hive-Mind Sessions** — Launch multi-agent orchestration via [RuFlo](https://github.com/ruvnet/ruflo) with shared memory and consensus — supports both Claude Code and Codex
+- **Agent Sessions** — Launch specialist agents (code reviewer, debugger, security auditor, and 33 more) with focused tools and expertise
 - **Agent Sessions** — Run single-agent sessions with Claude Code (`.claude/agents/*.md`) or Codex
 - **Dual CLI Support** — Switch between Claude Code and OpenAI Codex per-session with branded icons, separate commands, and per-CLI settings
 - **Interactive Terminals** — Full terminal sessions with tmux persistence — pop out to system terminal and adopt back anytime
@@ -76,7 +76,7 @@
 - **File Explorer** — Browse your project files, open and edit them, all from the sidebar
 - **Session Persistence** — Every session survives server restarts, tab closes, and reboots — reconnect with full scrollback
 - **Real-Time Streaming** — WebSocket-powered live output, tool calls, and progress tracking
-- **Multi-Project Support** — Per-project RuFlo initialization, agent configurations, and task queues
+- **Multi-Project Support** — Per-project agent configurations, color-coded cards, and session management
 - **Voice Dictation** — Speak your instructions via local Whisper or cloud APIs (OpenAI, Groq) — keys encrypted at rest
 - **Desktop App** — Electron system tray app with auto-launch, server management, and native STT
 
@@ -149,14 +149,13 @@ cd server && npm start
 
 ## How It Works
 
-OctoAlly is a dashboard that sits on top of **Claude Code**, **OpenAI Codex**, and **RuFlo**:
+OctoAlly is a dashboard that sits on top of **Claude Code** and **OpenAI Codex**:
 
 - **[Claude Code](https://docs.anthropic.com/en/docs/claude-code)** is Anthropic's CLI agent for coding tasks (uses `CLAUDE.md` for project instructions)
 - **[OpenAI Codex](https://github.com/openai/codex)** is OpenAI's CLI agent for coding tasks (uses `AGENTS.md` for project instructions)
-- **[RuFlo](https://github.com/ruvnet/ruflo)** adds multi-agent orchestration, hive-mind coordination, and memory to both CLIs
 - **OctoAlly** provides the UI to manage projects, launch sessions, and monitor everything in real-time
 
-When you add a project and enable RuFlo, OctoAlly automatically initializes the project with agent definitions, hive-mind support, and the configuration files both CLIs need (`CLAUDE.md` + `AGENTS.md`). You can then launch sessions with either Claude or Codex directly from the dashboard — each session tracks which CLI is running, with branded icons and per-CLI settings.
+When you add a project, OctoAlly installs 36 default agent definitions to `~/.claude/agents/` covering development, testing, security, infrastructure, and more. You can then launch sessions or specialist agents with either Claude or Codex directly from the dashboard — each session tracks which CLI is running, with branded icons and per-CLI settings.
 
 ---
 
@@ -186,7 +185,7 @@ octoally uninstall-service  # Remove the system service
 │   Zustand            │                    │    PTY Worker           │
 └──────────────────────┘                    │    ├── tmux sessions    │
                                             │    ├── Claude Code      │
-┌──────────────────────┐                    │    ├── RuFlo agents     │
+┌──────────────────────┐                    │    ├── Agent sessions   │
 │   Desktop (Electron) │                    │    └── Terminal shells  │
 │   System tray        │ <────────────────> │                         │
 │   Speech-to-text     │                    └─────────────────────────┘
@@ -198,7 +197,7 @@ octoally uninstall-service  # Remove the system service
 | **Frontend** | React 19, Vite, Tailwind CSS 4, TanStack Query, Zustand, xterm.js |
 | **Backend** | Fastify, TypeScript, SQLite (better-sqlite3), node-pty, WebSocket |
 | **Desktop** | Electron, system tray, local Whisper STT, AES-256-GCM config encryption |
-| **Sessions** | tmux for persistence, dtach for detach/reattach, Claude Code + RuFlo |
+| **Sessions** | tmux for persistence, dtach for detach/reattach, Claude Code + Codex |
 
 ---
 

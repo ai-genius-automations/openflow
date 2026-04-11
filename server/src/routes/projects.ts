@@ -1,82 +1,20 @@
 import { FastifyPluginAsync } from 'fastify';
 import { getDb } from '../db/index.js';
 import { nanoid } from 'nanoid';
-import { readdir, mkdir, readFile, writeFile } from 'fs/promises';
-import { join, resolve, basename, dirname } from 'path';
+import { readdir, mkdir, readFile, writeFile, rm, unlink, copyFile } from 'fs/promises';
+import { join, resolve, basename } from 'path';
 import { homedir } from 'os';
-import { fileURLToPath } from 'url';
-import { execFile, execFileSync } from 'child_process';
-import { existsSync, mkdirSync, statSync, readFileSync, writeFileSync } from 'fs';
+import { execFile } from 'child_process';
+import { existsSync, readFileSync, writeFileSync, readdirSync, lstatSync, unlinkSync } from 'fs';
 import { promisify } from 'util';
+import { getSetting } from './settings.js';
+import { installDefaultAgents } from '../data/default-agents.js';
 
 const execFileAsync = promisify(execFile);
 
 /* ================================================================
-   Cached ruflo version check — avoids per-request registry calls
+   Ruflo deprecation helpers
    ================================================================ */
-
-interface RufloVersionCache {
-  local: string;
-  remote: string;
-  checkedAt: number;
-}
-
-let _rufloVersionCache: RufloVersionCache | null = null;
-const RUFLO_VERSION_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
-
-function getRufloLocalVersion(): string {
-  const rufloDir = join(process.env.RUFLO_HOME || join(homedir(), '.octoally', 'ruflo'));
-  const pkgPath = join(rufloDir, 'node_modules', 'ruflo', 'package.json');
-  // Fall back to legacy path
-  const legacyPath = join(homedir(), '.hivecommand', 'ruflo', 'node_modules', 'ruflo', 'package.json');
-  for (const p of [pkgPath, legacyPath]) {
-    try {
-      if (existsSync(p)) {
-        const pkg = JSON.parse(readFileSync(p, 'utf-8'));
-        return pkg.version || '';
-      }
-    } catch { /* ignore */ }
-  }
-  return '';
-}
-
-async function getRufloVersionInfo(): Promise<{ local: string; remote: string; updateAvailable: boolean }> {
-  const now = Date.now();
-  if (_rufloVersionCache && (now - _rufloVersionCache.checkedAt) < RUFLO_VERSION_CACHE_TTL) {
-    return {
-      local: _rufloVersionCache.local,
-      remote: _rufloVersionCache.remote,
-      updateAvailable: _rufloVersionCache.remote !== '' && _rufloVersionCache.local !== '' && _rufloVersionCache.remote !== _rufloVersionCache.local,
-    };
-  }
-
-  const local = getRufloLocalVersion();
-  let remote = '';
-  try {
-    const resp = await fetch('https://registry.npmjs.org/ruflo/latest', {
-      signal: AbortSignal.timeout(5000),
-    });
-    if (resp.ok) {
-      const data = await resp.json() as { version?: string };
-      remote = data.version || '';
-    }
-  } catch { /* network issue — use cached or skip */ }
-
-  // Only update cache if we got a remote version (don't cache failures)
-  if (remote) {
-    _rufloVersionCache = { local, remote, checkedAt: now };
-  } else if (_rufloVersionCache) {
-    // Refresh local version but keep cached remote
-    _rufloVersionCache.local = local;
-    remote = _rufloVersionCache.remote;
-  }
-
-  return {
-    local,
-    remote,
-    updateAvailable: remote !== '' && local !== '' && remote !== local,
-  };
-}
 
 /**
  * Migrate hook paths in .claude/settings.json to absolute paths.
@@ -116,66 +54,178 @@ function migrateSettingsHookPaths(projectPath: string): string | null {
   return null;
 }
 
-/** Shared ruflo-run.sh — created by DevCortex installer, shared with OctoAlly.
- *  Falls back to local binary, then npx if neither exists (no DevCortex installed). */
-const RUFLO_RUN = existsSync(join(homedir(), '.octoally', 'ruflo-run.sh'))
-  ? join(homedir(), '.octoally', 'ruflo-run.sh')
-  : join(homedir(), '.hivecommand', 'ruflo-run.sh');
-const HAS_RUFLO_RUN = existsSync(RUFLO_RUN);
-const RUFLO_LOCAL_BIN = existsSync(join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo'))
-  ? join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo')
-  : existsSync(join(homedir(), '.hivecommand', 'ruflo', 'node_modules', '.bin', 'ruflo'))
-    ? join(homedir(), '.hivecommand', 'ruflo', 'node_modules', '.bin', 'ruflo')
-    : null;
-
-/** SONA patch script — patches ruflo's hook-handler.cjs with trajectory learning.
- *  Ships in this repo (scripts/patch-sona.sh) so all devs get it.
- *  Version-gated: auto-disables when ruflo ships native SONA support. */
-const SONA_PATCH = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', 'scripts', 'patch-sona.sh');
-const HAS_SONA_PATCH = existsSync(SONA_PATCH);
 
 /**
- * Check if a project already has a valid RuFlo memory database.
- * Returns true if .swarm/memory.db exists and has actual content (schema).
- * An empty 0-byte file (created by broken init) is treated as invalid.
+ * Strip ruflo-managed hooks from .claude/settings.json while preserving user config.
+ * Returns list of removed hook descriptions for logging.
  */
-function hasValidMemoryDb(projectPath: string): boolean {
-  const dbPath = join(projectPath, '.swarm', 'memory.db');
-  if (!existsSync(dbPath)) return false;
+function stripRufloHooks(projectPath: string): string[] {
+  const settingsPath = join(projectPath, '.claude', 'settings.json');
+  if (!existsSync(settingsPath)) return [];
   try {
-    const stat = statSync(dbPath);
-    // A properly initialized DB is ~155KB+; an empty/broken one is 0 bytes
-    return stat.size > 1024;
+    const raw = readFileSync(settingsPath, 'utf-8');
+    const parsed = JSON.parse(raw);
+    if (!parsed.hooks) return [];
+    const removed: string[] = [];
+    for (const [hookType, entries] of Object.entries(parsed.hooks) as [string, any[]][]) {
+      if (!Array.isArray(entries)) continue;
+      parsed.hooks[hookType] = entries.filter((entry: any) => {
+        const hooks = entry.hooks || [];
+        // Check both command content AND matcher for ruflo/devcortex references
+        const matcherStr = (entry.matcher || '').toLowerCase();
+        const isMatcherRuflo = matcherStr.includes('devcortex') ||
+          matcherStr.includes('ruflo') ||
+          matcherStr.includes('claude-flow') ||
+          matcherStr.includes('hive-mind') ||
+          matcherStr.includes('hive_mind');
+        const isRuflo = isMatcherRuflo || hooks.some((h: any) =>
+          h.command && (
+            h.command.includes('ruflo') ||
+            h.command.includes('claude-flow') ||
+            h.command.includes('hook-handler.cjs') ||
+            h.command.includes('devcortex') ||
+            h.command.includes('.hivecommand') ||
+            h.command.includes('sona') ||
+            h.command.includes('hive-cleanup') ||
+            h.command.includes('memory-sync') ||
+            h.command.includes('auto-memory') ||
+            h.command.includes('debate-gate') ||
+            h.command.includes('graph-state') ||
+            h.command.includes('intelligence-hook') ||
+            h.command.includes('ranked-context')
+          )
+        );
+        if (isRuflo) {
+          removed.push(`${hookType}: ${entry.matcher || '(all)'}`);
+        }
+        return !isRuflo;
+      });
+      // Remove empty arrays
+      if (parsed.hooks[hookType].length === 0) {
+        delete parsed.hooks[hookType];
+      }
+    }
+    if (Object.keys(parsed.hooks).length === 0) {
+      delete parsed.hooks;
+    }
+    if (removed.length > 0) {
+      writeFileSync(settingsPath, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
+    }
+    return removed;
   } catch {
-    return false;
+    return [];
   }
 }
 
-/** Check which config files exist in a project that ruflo init would overwrite */
-function checkRufloConflicts(projectPath: string): { settingsJson: boolean; claudeMd: boolean; agentsMd: boolean } {
-  return {
-    settingsJson: existsSync(join(projectPath, '.claude', 'settings.json')),
-    claudeMd: existsSync(join(projectPath, 'CLAUDE.md')),
-    agentsMd: existsSync(join(projectPath, 'AGENTS.md')),
-  };
-}
+/**
+ * Remove ruflo/devcortex artifacts from a single project.
+ * Returns a list of cleaned items for logging.
+ */
+async function cleanRufloFromProject(projectPath: string): Promise<string[]> {
+  const cleaned: string[] = [];
 
-/** Create timestamped .bak copies of files before ruflo init overwrites them */
-function backupRufloConflicts(projectPath: string): string[] {
-  const ts = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-  const backed: string[] = [];
-  const files = [
-    join(projectPath, '.claude', 'settings.json'),
-    join(projectPath, 'CLAUDE.md'),
-    join(projectPath, 'AGENTS.md'),
+  // Backup and remove .claude/settings.json (ruflo polluted it with hooks)
+  // Leave the rest of .claude/ intact — rules, skills, agents, commands are user content
+  const claudeSettings = join(projectPath, '.claude', 'settings.json');
+  if (existsSync(claudeSettings)) {
+    try {
+      await copyFile(claudeSettings, join(projectPath, '.claude', 'settings.json.pre-cleanup-backup'));
+      await unlink(claudeSettings);
+      cleaned.push('backed up and removed .claude/settings.json');
+    } catch { /* non-fatal */ }
+  }
+
+  // Nuke all ruflo/claude-flow directories (.swarm/ is kept — used by octoally-swarm)
+  const dirsToRemove = [
+    '.claude-flow',
+    '.codex',
+    '.devcortex-cli',
+    '.hive-mind',
+    '.ruflo',
   ];
-  for (const f of files) {
-    if (existsSync(f)) {
-      const bakPath = `${f}.${ts}.bak`;
-      try { writeFileSync(bakPath, readFileSync(f, 'utf-8'), 'utf-8'); backed.push(bakPath); } catch {}
+  for (const dir of dirsToRemove) {
+    const fullPath = join(projectPath, dir);
+    if (existsSync(fullPath)) {
+      try {
+        await rm(fullPath, { recursive: true, force: true });
+        cleaned.push(`removed ${dir}/`);
+      } catch { /* non-fatal */ }
     }
   }
-  return backed;
+
+  // Remove all ruflo-related files
+  const filesToRemove = [
+    'CLAUDE.md',
+    'AGENTS.md',
+    '.devcortex',
+    'claude-flow.config.json',
+    '.mcp.json',
+    'hooks/on-tool-use.sh',
+    'ruvector.db',
+    '.claude/helpers/hook-handler.cjs',
+    '.claude/helpers/learning-service.mjs',
+    '.claude/helpers/learning-hooks.sh',
+    '.claude/helpers/sona-bridge.cjs',
+    '.claude/helpers/intelligence.cjs',
+  ];
+  for (const file of filesToRemove) {
+    const fullPath = join(projectPath, file);
+    if (existsSync(fullPath)) {
+      try {
+        await unlink(fullPath);
+        cleaned.push(`removed ${file}`);
+      } catch { /* non-fatal */ }
+    }
+  }
+
+  // Remove hooks/ directory if empty (not a standard folder — was added by OctoAlly)
+  const hooksDir = join(projectPath, 'hooks');
+  if (existsSync(hooksDir)) {
+    try {
+      const remaining = readdirSync(hooksDir);
+      if (remaining.length === 0) {
+        await rm(hooksDir, { recursive: true });
+        cleaned.push('removed empty hooks/');
+      }
+    } catch { /* non-fatal */ }
+  }
+
+  // Deregister ruflo/devcortex/claude-flow MCP servers (idempotent)
+  for (const server of ['ruflo', 'devcortex', 'claude-flow']) {
+    try {
+      await execFileAsync('claude', ['mcp', 'remove', server], {
+        cwd: projectPath,
+        timeout: 15_000,
+      });
+      cleaned.push(`deregistered ${server} MCP server`);
+    } catch { /* already removed or CLI not found */ }
+  }
+
+  return cleaned;
+}
+
+/** Check if ruflo/claude-flow artifacts exist at a project path. */
+function hasRufloArtifacts(projectPath: string): boolean {
+  if (existsSync(join(projectPath, '.claude-flow')) ||
+    existsSync(join(projectPath, '.ruflo')) ||
+    existsSync(join(projectPath, '.hive-mind')) ||
+    existsSync(join(projectPath, '.devcortex-cli'))) return true;
+
+  // Check CLAUDE.md for ruflo markers
+  try {
+    const content = readFileSync(join(projectPath, 'CLAUDE.md'), 'utf-8');
+    if (content.includes('RuFlo') || content.includes('claude-flow') ||
+      content.includes('Swarm Orchestration') || content.includes('hive-mind')) return true;
+  } catch { /* file doesn't exist */ }
+
+  // Check .claude/settings.json for claude-flow references
+  try {
+    const content = readFileSync(join(projectPath, '.claude', 'settings.json'), 'utf-8');
+    if (content.includes('claude-flow') || content.includes('ruflo') ||
+      content.includes('claudeFlow')) return true;
+  } catch { /* file doesn't exist */ }
+
+  return false;
 }
 
 
@@ -184,9 +234,11 @@ export interface Project {
   name: string;
   path: string;
   description: string | null;
-  ruflo_prompt: string | null;
+  session_prompt: string | null;
   openclaw_prompt: string | null;
   default_web_url: string | null;
+  skip_permissions: number;
+  color: string;
   created_at: string;
   updated_at: string;
 }
@@ -198,7 +250,7 @@ const PROJECTS_FILE = join(OCTOALLY_DIR, 'projects.json');
 /** Export current DB projects to the config file (for portability across DB resets) */
 async function exportToConfig(): Promise<void> {
   const db = getDb();
-  const rows = db.prepare('SELECT name, path, description, ruflo_prompt, openclaw_prompt, default_web_url FROM projects ORDER BY name COLLATE NOCASE').all();
+  const rows = db.prepare('SELECT name, path, description, session_prompt, openclaw_prompt, default_web_url FROM projects ORDER BY name COLLATE NOCASE').all();
   await mkdir(OCTOALLY_DIR, { recursive: true });
   await writeFile(PROJECTS_FILE, JSON.stringify({ projects: rows }, null, 2), 'utf-8');
 }
@@ -227,8 +279,8 @@ export async function initProjects(): Promise<void> {
     for (const p of configs) {
       if (!p.name || !p.path) continue;
       const id = nanoid(12);
-      db.prepare('INSERT INTO projects (id, name, path, description, ruflo_prompt, openclaw_prompt, default_web_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
-        .run(id, p.name, p.path, p.description || null, p.ruflo_prompt || null, p.openclaw_prompt || null, p.default_web_url || null);
+      db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, default_web_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
+        .run(id, p.name, p.path, p.description || null, p.session_prompt || null, p.openclaw_prompt || null, p.default_web_url || null);
       imported++;
     }
     if (imported > 0) {
@@ -287,9 +339,9 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
   // Create project
   app.post<{
-    Body: { name: string; path: string; description?: string; ruflo_prompt?: string; openclaw_prompt?: string; default_web_url?: string };
+    Body: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string };
   }>('/projects', async (req, reply) => {
-    const { name, path, description, ruflo_prompt, openclaw_prompt, default_web_url } = req.body;
+    const { name, path, description, session_prompt, openclaw_prompt, default_web_url, color } = req.body;
     if (!name || !path) return reply.status(400).send({ error: 'name and path are required' });
 
     const db = getDb();
@@ -298,12 +350,15 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     const existing = db.prepare('SELECT id FROM projects WHERE path = ?').get(path);
     if (existing) return reply.status(409).send({ error: 'Project with this path already exists' });
 
-    db.prepare('INSERT INTO projects (id, name, path, description, ruflo_prompt, openclaw_prompt, default_web_url) VALUES (?, ?, ?, ?, ?, ?, ?)')
-      .run(id, name, path, description || null, ruflo_prompt || null, openclaw_prompt || null, default_web_url || null);
+    db.prepare('INSERT INTO projects (id, name, path, description, session_prompt, openclaw_prompt, default_web_url, color) VALUES (?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(id, name, path, description || null, session_prompt || null, openclaw_prompt || null, default_web_url || null, color || '');
 
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(id);
     await exportToConfig();
     const mcpPlaced = await ensureMcpJson(path);
+
+    // Ensure default agents are installed (no-op if marker exists)
+    try { installDefaultAgents(); } catch { /* non-fatal */ }
 
     return { ok: true, project };
   });
@@ -311,7 +366,7 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
   // Update project
   app.patch<{
     Params: { id: string };
-    Body: { name?: string; description?: string; ruflo_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null };
+    Body: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; skip_permissions?: number; color?: string };
   }>('/projects/:id', async (req, reply) => {
     const db = getDb();
     const updates: string[] = [];
@@ -319,9 +374,11 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
 
     if (req.body.name) { updates.push('name = ?'); params.push(req.body.name); }
     if (req.body.description !== undefined) { updates.push('description = ?'); params.push(req.body.description); }
-    if (req.body.ruflo_prompt !== undefined) { updates.push('ruflo_prompt = ?'); params.push(req.body.ruflo_prompt); }
+    if (req.body.session_prompt !== undefined) { updates.push('session_prompt = ?'); params.push(req.body.session_prompt); }
     if (req.body.openclaw_prompt !== undefined) { updates.push('openclaw_prompt = ?'); params.push(req.body.openclaw_prompt); }
     if (req.body.default_web_url !== undefined) { updates.push('default_web_url = ?'); params.push(req.body.default_web_url); }
+    if (req.body.skip_permissions !== undefined) { updates.push('skip_permissions = ?'); params.push(req.body.skip_permissions ? 1 : 0); }
+    if (req.body.color !== undefined) { updates.push('color = ?'); params.push(req.body.color); }
 
     if (updates.length === 0) return reply.status(400).send({ error: 'Nothing to update' });
 
@@ -351,558 +408,166 @@ export const projectRoutes: FastifyPluginAsync = async (app) => {
     return { ok: true };
   });
 
-  // RuFlo status for all projects
-  app.get('/projects/ruflo-status', async () => {
+  // Uninstall ruflo/devcortex from a single project
+  app.post<{
+    Params: { id: string };
+  }>('/projects/:id/ruflo-uninstall', async (req, reply) => {
+    const db = getDb();
+    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as Project | undefined;
+    if (!project) return reply.status(404).send({ error: 'Project not found' });
+
+    const cleaned = await cleanRufloFromProject(project.path);
+    return { ok: true, cleaned };
+  });
+
+  // Bulk uninstall ruflo/devcortex from ALL projects + global cleanup
+  app.post('/projects/ruflo-uninstall-all', async () => {
     const db = getDb();
     const projects = db.prepare('SELECT id, path FROM projects').all() as { id: string; path: string }[];
 
-    // Check ruflo version (cached, non-blocking registry check)
-    const versionInfo = await getRufloVersionInfo();
+    let projectsCleaned = 0;
+    const globalCleaned: string[] = [];
 
-    // Check all projects in parallel using file existence only (no npx calls - too slow)
-    // Current SONA patch version — bump when patch-sona.sh changes
-    const CURRENT_SONA_PATCH_VERSION = 2;
-
-    const entries = await Promise.all(
-      projects.map(async (p) => {
-        const hasMemory = hasValidMemoryDb(p.path);
-        const hasSwarm = existsSync(join(p.path, '.swarm'));
-        const hasClaudeFlow = existsSync(join(p.path, '.claude-flow', 'config.yaml'));
-        const hasClaudeSettings = existsSync(join(p.path, '.claude', 'settings.json'));
-        const installed = hasSwarm || hasMemory || hasClaudeFlow || hasClaudeSettings;
-
-        // Detect Codex readiness: AGENTS.md exists (created by ruflo init --codex or --dual)
-        const codexReady = existsSync(join(p.path, 'AGENTS.md'));
-
-        // Detect SONA patch version from hook-handler sentinel
-        let sonaPatchVersion = 0;
-        if (installed) {
-          try {
-            const hookHandler = join(p.path, '.claude', 'helpers', 'hook-handler.cjs');
-            if (existsSync(hookHandler)) {
-              const content = readFileSync(hookHandler, 'utf-8').slice(0, 1000);
-              const match = content.match(/SONA_PATCH_v(\d+)/);
-              if (match) sonaPatchVersion = parseInt(match[1], 10);
-            }
-          } catch { /* non-fatal */ }
-        }
-
-        return [p.id, {
-          installed,
-          version: versionInfo.local || null,
-          memoryInitialized: hasMemory,
-          codexReady,
-          sonaPatchVersion,
-          sonaPatchOutdated: installed && sonaPatchVersion < CURRENT_SONA_PATCH_VERSION,
-        }] as const;
-      })
-    );
-
-    const statuses: Record<string, { installed: boolean; version: string | null; memoryInitialized: boolean; codexReady: boolean; sonaPatchVersion: number; sonaPatchOutdated: boolean }> = {};
-    for (const [id, status] of entries) {
-      statuses[id] = status;
+    // Clean each project
+    for (const p of projects) {
+      const result = await cleanRufloFromProject(p.path);
+      if (result.length > 0) projectsCleaned++;
     }
 
-    return {
-      statuses,
-      currentSonaPatchVersion: CURRENT_SONA_PATCH_VERSION,
-      rufloVersion: versionInfo.local || null,
-      rufloLatestVersion: versionInfo.remote || null,
-      rufloUpdateAvailable: versionInfo.updateAvailable,
-    };
-  });
-
-  // Check for existing config files that ruflo init would overwrite
-  app.get<{
-    Params: { id: string };
-  }>('/projects/:id/ruflo-check', async (req, reply) => {
-    const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as Project | undefined;
-    if (!project) return reply.status(404).send({ error: 'Project not found' });
-    return checkRufloConflicts(project.path);
-  });
-
-  // Update the shared ruflo package at ~/.octoally/ruflo/
-  app.post('/projects/ruflo-update', async (_req, reply) => {
-    const rufloDir = join(homedir(), '.octoally', 'ruflo');
-    if (!existsSync(rufloDir)) {
-      mkdirSync(rufloDir, { recursive: true });
-    }
+    // Remove broken symlinks in ~/.octoally/ (leftover from hivecommand migration)
+    const octoallyDir = join(homedir(), '.octoally');
     try {
-      const npx = process.platform === 'win32' ? 'npm.cmd' : 'npm';
-      const result = await execFileAsync(npx, ['install', 'ruflo@latest'], {
-        cwd: rufloDir,
-        timeout: 120_000,
-      });
-      // Read installed version
-      let version = 'unknown';
-      try {
-        const pkg = JSON.parse(readFileSync(join(rufloDir, 'node_modules', 'ruflo', 'package.json'), 'utf-8'));
-        version = pkg.version;
-      } catch {}
-      return { ok: true, version, output: result.stdout || 'done' };
-    } catch (err: any) {
-      return reply.status(500).send({ ok: false, error: err.message || String(err) });
-    }
-  });
-
-  // Install RuFlo for a project (full init — backs up existing config files first)
-  app.post<{
-    Params: { id: string };
-    Body: { mode?: 'merge' | 'overwrite' };
-  }>('/projects/:id/ruflo-install', async (req, reply) => {
-    const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as Project | undefined;
-    if (!project) return reply.status(404).send({ error: 'Project not found' });
-
-    const mode = (req.body as any)?.mode || 'overwrite';
-    const npx = process.platform === 'win32' ? 'npx.cmd' : 'npx';
-    // Ensure project directory exists (user may have typed a path that doesn't exist yet)
-    if (!existsSync(project.path)) {
-      mkdirSync(project.path, { recursive: true });
-    }
-    const opts = { cwd: project.path, timeout: 180_000 };
-    const output: string[] = [];
-
-    // Save original content before ruflo overwrites (for merge mode)
-    const claudeMdPath = join(project.path, 'CLAUDE.md');
-    const settingsJsonPath = join(project.path, '.claude', 'settings.json');
-    const originalClaudeMd = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf-8') : null;
-    let originalSettings: Record<string, any> | null = null;
-    if (existsSync(settingsJsonPath)) {
-      try { originalSettings = JSON.parse(readFileSync(settingsJsonPath, 'utf-8')); } catch {}
-    }
-
-    // Create .bak copies before init overwrites them
-    const backed = backupRufloConflicts(project.path);
-    if (backed.length > 0) {
-      output.push(`[backup] ${backed.length} file(s) backed up`);
-      for (const b of backed) output.push(`  → ${b}`);
-    }
-
-    // Clean stale transitive deps from the shared ruflo install before running init.
-    // agentdb 2.x has keepalive timers that prevent ruflo hooks from exiting.
-    // agentdb is now bundled inside ruflo — standalone copies are always stale.
-    const rufloDir = join(homedir(), '.octoally', 'ruflo');
-    const staleAgentdbPaths = [
-      join(rufloDir, 'node_modules', 'agentdb'),
-      join(homedir(), '.hivecommand', 'ruflo', 'node_modules', 'agentdb'),
-    ];
-    for (const p of staleAgentdbPaths) {
-      if (existsSync(p)) {
+      for (const entry of readdirSync(octoallyDir)) {
+        const full = join(octoallyDir, entry);
         try {
-          const { rm } = await import('fs/promises');
-          await rm(p, { recursive: true, force: true });
-          output.push(`[cleanup] Removed stale agentdb from ${p}`);
-        } catch { /* non-fatal */ }
-      }
-    }
-    // Also clean stale npx caches with @claude-flow/cli (old package name)
-    try {
-      const npxDir = join(homedir(), '.npm', '_npx');
-      if (existsSync(npxDir)) {
-        const { readdirSync: readNpxDir } = await import('fs');
-        const { rm } = await import('fs/promises');
-        for (const entry of readNpxDir(npxDir)) {
-          const cfPkg = join(npxDir, entry, 'node_modules', '@claude-flow', 'cli', 'package.json');
-          if (existsSync(cfPkg)) {
-            await rm(join(npxDir, entry), { recursive: true, force: true });
-            output.push(`[cleanup] Removed stale @claude-flow/cli npx cache`);
+          const stat = lstatSync(full);
+          if (stat.isSymbolicLink() && !existsSync(full)) {
+            unlinkSync(full);
+            globalCleaned.push(`removed broken symlink ${entry}`);
           }
-        }
+        } catch { /* skip */ }
       }
     } catch { /* non-fatal */ }
 
-    // Run each step sequentially to avoid parallel npx downloads OOM on low-memory machines
-    // Use shared ruflo-run.sh if available (fast), otherwise fall back to npx
-    const rufloArgs = HAS_RUFLO_RUN
-      ? { cmd: 'bash', args: (sub: string[]) => [RUFLO_RUN, ...sub] }
-      : RUFLO_LOCAL_BIN
-        ? { cmd: RUFLO_LOCAL_BIN, args: (sub: string[]) => sub }
-        : { cmd: npx, args: (sub: string[]) => ['ruflo@latest', ...sub] };
-    try {
-      // Use --force (Claude-only) to get the full detailed CLAUDE.md config.
-      // We create AGENTS.md separately below — using --dual would overwrite
-      // CLAUDE.md with a generic stub that loses project-specific config.
-      const result = await execFileAsync(rufloArgs.cmd, rufloArgs.args(['init', '--force']), opts);
-      output.push('[ruflo init] ' + (result.stdout || 'done'));
-    } catch (err: any) {
-      output.push('[error] ' + (err.message || String(err)));
-      return reply.status(500).send({ ok: false, output: output.join('\n'), error: err.message });
-    }
-
-    // Merge mode: restore original user content into the newly generated files
-    if (mode === 'merge') {
-      // CLAUDE.md — append original content after ruflo template
-      if (originalClaudeMd) {
+    // Global cleanup
+    const globalDirs = [
+      join(homedir(), '.octoally', 'ruflo'),
+      join(homedir(), '.hivecommand'),
+      join(homedir(), '.config', 'devcortex'),
+    ];
+    for (const dir of globalDirs) {
+      if (existsSync(dir)) {
         try {
-          // Strip any previous "Original Project Configuration" section to avoid duplication
-          const separator = '---\n\n## Original Project Configuration';
-          const sepIdx = originalClaudeMd.indexOf(separator);
-          const userContent = sepIdx >= 0 ? originalClaudeMd.slice(0, sepIdx).trimEnd() : originalClaudeMd.trimEnd();
-
-          if (userContent) {
-            const newClaudeMd = existsSync(claudeMdPath) ? readFileSync(claudeMdPath, 'utf-8') : '';
-            const merged = newClaudeMd.trimEnd()
-              + '\n\n---\n\n'
-              + '## Original Project Configuration\n\n'
-              + '<!-- Preserved from your previous CLAUDE.md -->\n\n'
-              + userContent;
-            writeFileSync(claudeMdPath, merged, 'utf-8');
-            output.push('[merge] CLAUDE.md — appended original project configuration');
-          }
-        } catch (err: any) {
-          output.push('[merge] CLAUDE.md — failed: ' + err.message);
-        }
-      }
-
-      // settings.json — deep merge: ruflo hooks + original user keys
-      if (originalSettings) {
-        try {
-          const newSettingsRaw = existsSync(settingsJsonPath) ? readFileSync(settingsJsonPath, 'utf-8') : '{}';
-          const newSettings = JSON.parse(newSettingsRaw);
-
-          // Preserve user keys that ruflo doesn't manage
-          const rufloManagedKeys = new Set(['hooks']);
-          for (const [key, value] of Object.entries(originalSettings)) {
-            if (!rufloManagedKeys.has(key) && !(key in newSettings)) {
-              newSettings[key] = value;
-            }
-          }
-
-          // For hooks: keep ruflo's hooks but merge in user's custom matchers
-          if (originalSettings.hooks && newSettings.hooks) {
-            for (const [hookType, hookEntries] of Object.entries(originalSettings.hooks) as [string, any[]][]) {
-              if (!Array.isArray(hookEntries)) continue;
-              const newEntries: any[] = newSettings.hooks[hookType] || [];
-              const existingMatchers = new Set(newEntries.map((e: any) => e.matcher));
-              for (const entry of hookEntries) {
-                if (entry.matcher && !existingMatchers.has(entry.matcher)) {
-                  newEntries.push(entry);
-                }
-              }
-              newSettings.hooks[hookType] = newEntries;
-            }
-          }
-
-          writeFileSync(settingsJsonPath, JSON.stringify(newSettings, null, 2), 'utf-8');
-          output.push('[merge] settings.json — preserved user config (permissions, env, custom hooks)');
-        } catch (err: any) {
-          output.push('[merge] settings.json — failed: ' + err.message);
-        }
+          await rm(dir, { recursive: true, force: true });
+          globalCleaned.push(`removed ${dir}`);
+        } catch { /* non-fatal */ }
       }
     }
 
-    // Create AGENTS.md for Codex support if it doesn't exist
-    const agentsMdPath = join(project.path, 'AGENTS.md');
-    if (!existsSync(agentsMdPath)) {
-      try {
-        const projectName = project.name || 'project';
-        const agentsMdContent = `# ${projectName}
-
-> Multi-agent orchestration framework for agentic coding
-
-## Project Overview
-
-A Claude Flow powered project
-
-**Tech Stack**: TypeScript, Node.js
-**Architecture**: Domain-Driven Design with bounded contexts
-
-## Quick Start
-
-### Installation
-\`\`\`bash
-npm install
-\`\`\`
-
-### Build
-\`\`\`bash
-npm run build
-\`\`\`
-
-### Test
-\`\`\`bash
-npm test
-\`\`\`
-
-## Agent Coordination
-
-### Swarm Configuration
-
-This project uses hierarchical swarm coordination for complex tasks:
-
-| Setting | Value | Purpose |
-|---------|-------|---------|
-| Topology | \`hierarchical\` | Queen-led coordination (anti-drift) |
-| Max Agents | 8 | Optimal team size |
-| Strategy | \`specialized\` | Clear role boundaries |
-| Consensus | \`raft\` | Leader-based consistency |
-
-### Available Skills
-
-Use \`$skill-name\` syntax to invoke:
-
-| Skill | Use Case |
-|-------|----------|
-| \`$swarm-orchestration\` | Multi-agent task coordination |
-| \`$memory-management\` | Pattern storage and retrieval |
-| \`$sparc-methodology\` | Structured development workflow |
-| \`$security-audit\` | Security scanning and CVE detection |
-
-### Agent Types
-
-| Type | Role | Use Case |
-|------|------|----------|
-| \`researcher\` | Requirements analysis | Understanding scope |
-| \`architect\` | System design | Planning structure |
-| \`coder\` | Implementation | Writing code |
-| \`tester\` | Test creation | Quality assurance |
-| \`reviewer\` | Code review | Security and quality |
-
-## Code Standards
-
-### File Organization
-- **NEVER** save to root folder
-- \`/src\` - Source code files
-- \`/tests\` - Test files
-- \`/docs\` - Documentation
-- \`/config\` - Configuration files
-
-### Quality Rules
-- Files under 500 lines
-- No hardcoded secrets
-- Input validation at boundaries
-- Typed interfaces for public APIs
-
-## Security
-
-- NEVER commit secrets, credentials, or .env files
-- NEVER hardcode API keys
-- Always validate user input
-
-## Memory System
-
-### Storing Patterns
-\`\`\`bash
-npx @claude-flow/cli memory store \\
-  --key "pattern-name" \\
-  --value "pattern description" \\
-  --namespace patterns
-\`\`\`
-
-### Searching Memory
-\`\`\`bash
-npx @claude-flow/cli memory search \\
-  --query "search terms" \\
-  --namespace patterns
-\`\`\`
-
-## Links
-
-- Documentation: https://github.com/ruvnet/claude-flow
-- Issues: https://github.com/ruvnet/claude-flow/issues
-`;
-        writeFileSync(agentsMdPath, agentsMdContent, 'utf-8');
-        output.push('[codex] Created AGENTS.md for Codex support');
-      } catch (err: any) {
-        output.push('[codex] Failed to create AGENTS.md: ' + (err.message || 'unknown'));
-      }
-    } else {
-      output.push('[codex] AGENTS.md already exists — skipping');
-    }
-
-    // Initialize hive-mind (sequential — ruflo already cached from init above)
-    try {
-      const hmResult = await execFileAsync(rufloArgs.cmd, rufloArgs.args(['hive-mind', 'init']), opts);
-      output.push('[hive-mind init] ' + (hmResult.stdout || 'done'));
-    } catch (err: any) {
-      output.push('[hive-mind init] ' + (err.message || 'skipped'));
-    }
-
-    // Register ruflo as a Claude Code MCP server (gives Claude 215+ tools).
-    // Uses ruflo-run.sh for fast cached execution; falls back to npx.
-    // Idempotent — claude mcp add overwrites if already registered.
-    try {
-      const mcpCmd = HAS_RUFLO_RUN
-        ? ['mcp', 'add', 'ruflo', '--', 'bash', RUFLO_RUN]
-        : RUFLO_LOCAL_BIN
-          ? ['mcp', 'add', 'ruflo', '--', RUFLO_LOCAL_BIN]
-          : ['mcp', 'add', 'ruflo', '--', 'npx', '-y', 'ruflo@latest'];
-      await execFileAsync('claude', mcpCmd, { ...opts, timeout: 30_000 });
-      output.push('[mcp] Registered ruflo as Claude Code MCP server');
-    } catch (err: any) {
-      output.push('[mcp] ' + (err.message || 'skipped — claude CLI not found'));
-    }
-
-    // Patch relative/broken hook paths to absolute after ruflo writes settings
-    const migrated = migrateSettingsHookPaths(project.path);
-    if (migrated) output.push(migrated);
-
-    // Rewrite stale `npx @claude-flow/cli@latest` references in hook scripts
-    // to the local ruflo binary. The npx call downloads on every invocation,
-    // causing session stop hooks to hang for 10+ seconds.
-    const rufloPrimary = join(homedir(), '.octoally', 'ruflo', 'node_modules', '.bin', 'ruflo');
-    const rufloLegacy = join(homedir(), '.hivecommand', 'ruflo', 'node_modules', '.bin', 'ruflo');
-    const localRuflo = existsSync(rufloPrimary) ? rufloPrimary : existsSync(rufloLegacy) ? rufloLegacy : null;
-    const staleNpxPattern = /npx\s+(?:@claude-flow\/cli@\S+|claude-flow@\S+)/g;
-    const staleNpxCheck = (s: string) => s.includes('npx @claude-flow/cli') || s.includes('npx claude-flow@');
-    if (localRuflo) {
-      // Patch hook shell scripts
-      const hookFiles = [
-        join(project.path, '.claude', 'hooks', 'session-end.sh'),
-        join(project.path, '.claude', 'helpers', 'pre-commit'),
-        join(project.path, '.claude', 'helpers', 'post-commit'),
-      ];
-      for (const file of hookFiles) {
+    // Global files
+    const globalFiles = [
+      join(homedir(), '.octoally', 'ruflo-run.sh'),
+      join(homedir(), '.hivecommand', 'ruflo-run.sh'),
+    ];
+    for (const file of globalFiles) {
+      if (existsSync(file)) {
         try {
-          if (!existsSync(file)) continue;
+          await unlink(file);
+          globalCleaned.push(`removed ${file}`);
+        } catch { /* non-fatal */ }
+      }
+    }
+
+    // Remove ruflo-generated global CLAUDE.md files
+    const globalClaudeMdFiles = [
+      join(homedir(), 'CLAUDE.md'),
+      join(homedir(), '.claude', 'CLAUDE.md'),
+    ];
+    for (const file of globalClaudeMdFiles) {
+      if (existsSync(file)) {
+        try {
           const content = readFileSync(file, 'utf-8');
-          if (!staleNpxCheck(content)) continue;
-          const fixed = content.replace(staleNpxPattern, `"${localRuflo}"`);
-          if (fixed !== content) {
-            writeFileSync(file, fixed, 'utf-8');
-            output.push(`[hooks] Migrated ${file.split('/').pop()} to local ruflo`);
+          if (content.includes('ruflo') || content.includes('CLAUDE-FLOW') || content.includes('claude-flow') || content.includes('RuFlo')) {
+            await unlink(file);
+            globalCleaned.push(`removed ${file}`);
           }
         } catch { /* non-fatal */ }
       }
-      // Patch settings.json hook commands that call stale npx packages
-      // No quotes — already inside JSON string values
-      const settingsJsonPath = join(project.path, '.claude', 'settings.json');
-      try {
-        if (existsSync(settingsJsonPath)) {
-          const content = readFileSync(settingsJsonPath, 'utf-8');
-          if (staleNpxCheck(content)) {
-            const fixed = content.replace(staleNpxPattern, localRuflo);
-            try {
-              JSON.parse(fixed);
-              writeFileSync(settingsJsonPath, fixed, 'utf-8');
-              output.push('[hooks] Migrated settings.json hook commands to local ruflo');
-            } catch {
-              output.push('[hooks] Skipped settings.json — replacement would produce invalid JSON');
-            }
-          }
-        }
-      } catch { /* non-fatal */ }
     }
 
-    // Ensure Stop/SessionEnd hooks have timeouts (ruflo session-end hangs without them)
+    // Deregister ruflo/devcortex MCP globally
     try {
-      const sp = join(project.path, '.claude', 'settings.json');
-      if (existsSync(sp)) {
-        const raw = readFileSync(sp, 'utf-8');
-        let parsed: any;
-        try { parsed = JSON.parse(raw); } catch { parsed = null; }
-        if (parsed?.hooks) {
-          let changed = false;
-          for (const key of ['Stop', 'SessionEnd', 'SubagentStop']) {
-            const entries = parsed.hooks[key];
-            if (!Array.isArray(entries)) continue;
-            for (const entry of entries) {
-              if (!Array.isArray(entry.hooks)) continue;
-              for (const h of entry.hooks) {
-                if (h.type === 'command' && !h.timeout) {
-                  h.timeout = 5000;
-                  changed = true;
-                }
-              }
-            }
-          }
-          if (changed) {
-            writeFileSync(sp, JSON.stringify(parsed, null, 2) + '\n', 'utf-8');
-            output.push('[hooks] Added timeouts to Stop/SessionEnd hooks');
-          }
-        }
-      }
+      await execFileAsync('claude', ['mcp', 'remove', 'ruflo'], { timeout: 15_000 });
+      globalCleaned.push('deregistered ruflo MCP (global)');
+    } catch { /* already removed */ }
+    try {
+      await execFileAsync('claude', ['mcp', 'remove', 'devcortex'], { timeout: 15_000 });
+      globalCleaned.push('deregistered devcortex MCP (global)');
+    } catch { /* already removed */ }
+
+    // Reset session commands to plain defaults
+    const upsert = db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value');
+    upsert.run('session_claude_command', 'claude');
+    upsert.run('session_codex_command', 'codex');
+    upsert.run('agent_claude_command', 'claude');
+    upsert.run('agent_codex_command', 'codex');
+    // Clean any stale old-named keys
+    db.prepare('DELETE FROM settings WHERE key IN (?, ?, ?)').run('ruflo_command', 'hivemind_claude_command', 'hivemind_codex_command');
+
+    // Update disposition to 'removed'
+    upsert.run('ruflo_disposition', 'removed');
+
+    // Re-install default agents (ruflo cleanup may have deleted .claude/agents/)
+    try {
+      const { installed } = installDefaultAgents(true);
+      if (installed.length > 0) globalCleaned.push(`installed ${installed.length} default agent(s)`);
     } catch { /* non-fatal */ }
 
-    // Patch SONA trajectory learning into ruflo hooks (version-gated, idempotent)
-    if (HAS_SONA_PATCH) {
-      try {
-        const sonaResult = await execFileAsync('bash', [SONA_PATCH, project.path], {
-          cwd: project.path, timeout: 30_000,
-        });
-        if (sonaResult.stderr) {
-          const sonaLines = sonaResult.stderr.split('\n').filter(l => l.includes('✓') || l.includes('○'));
-          for (const line of sonaLines) output.push(line.trim());
-        }
-      } catch (err: any) {
-        output.push('[sona-patch] ' + (err.message || 'skipped'));
-      }
-    }
-
-    // Clean up stale artifacts left by old ruflo versions.
-    // agentdb is now bundled inside ruflo — stale local copies (v2 alpha) cause
-    // "[AgentDB Patch] Controller index not found" warnings because the runtime patch
-    // finds the wrong version. Matches DevCortex installer cleanup logic.
-    // The agentdb-runtime-patch searches: cwd/node_modules/agentdb, then ../node_modules/agentdb,
-    // then $HOME/node_modules/agentdb — so we must clean ALL of these locations.
-    const cleanupDirs = [
-      project.path,        // project's own node_modules
-      homedir(),           // $HOME/node_modules (old ruflo scaffold at home level)
-    ];
-    // Also check parent directories up to $HOME (the patch walks up)
-    let parent = resolve(project.path, '..');
-    const home = homedir();
-    while (parent.length >= home.length && parent !== project.path) {
-      if (!cleanupDirs.includes(parent)) cleanupDirs.push(parent);
-      const next = resolve(parent, '..');
-      if (next === parent) break;
-      parent = next;
-    }
-
-    for (const dir of cleanupDirs) {
-      // Remove stale claude-flow.config.json (old ruflo v2 format).
-      // The config loader walks cwd → parent → $HOME/.claude-flow/ and warns
-      // "Invalid config … Required" when it finds the old JSON schema.
-      // New ruflo uses .claude-flow/config.yaml — the old JSON is always stale.
-      const staleConfig = join(dir, 'claude-flow.config.json');
-      if (existsSync(staleConfig)) {
-        try {
-          const { unlink: unlinkAsync } = await import('fs/promises');
-          await unlinkAsync(staleConfig);
-          output.push(`[cleanup] Removed stale claude-flow.config.json in ${dir}`);
-        } catch {}
-      }
-
-      // Remove stale agentdb (npm uninstall first, manual fallback)
-      const staleAgentdb = join(dir, 'node_modules', 'agentdb');
-      if (existsSync(staleAgentdb) && existsSync(join(dir, 'package.json'))) {
-        try {
-          await execFileAsync('npm', ['uninstall', 'agentdb'], { cwd: dir, timeout: 30_000 });
-          output.push(`[cleanup] Removed legacy agentdb from ${dir} (now bundled in ruflo)`);
-        } catch {
-          try {
-            const { rm } = await import('fs/promises');
-            await rm(staleAgentdb, { recursive: true, force: true });
-            output.push(`[cleanup] Removed stale node_modules/agentdb from ${dir} (manual)`);
-          } catch {}
-        }
-        // If the package.json is the old "claude-flow-project" scaffold with no real
-        // deps left, remove the whole thing (package.json, lock, empty node_modules)
-        try {
-          const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8'));
-          if (pkg.name === 'claude-flow-project') {
-            const deps = { ...pkg.dependencies, ...pkg.devDependencies };
-            delete deps.agentdb; // already uninstalled
-            if (Object.keys(deps).length === 0) {
-              const { rm, unlink: unlinkAsync } = await import('fs/promises');
-              await unlinkAsync(join(dir, 'package.json'));
-              const staleLock = join(dir, 'package-lock.json');
-              if (existsSync(staleLock)) await unlinkAsync(staleLock);
-              const staleModules = join(dir, 'node_modules');
-              if (existsSync(staleModules)) await rm(staleModules, { recursive: true, force: true });
-              output.push(`[cleanup] Removed empty claude-flow-project scaffolding from ${dir}`);
-            }
-          }
-        } catch {}
-      }
-    }
-
-    return { ok: true, output: output.join('\n') };
+    return { ok: true, projectsCleaned, globalCleaned };
   });
 
-  // List available ruflo agent types for a project (reads .claude/agents/*.md frontmatter)
+  // Set skip_permissions for all projects at once
+  app.put<{
+    Body: { skip_permissions: boolean };
+  }>('/projects/skip-permissions-all', async (req, reply) => {
+    const db = getDb();
+    const val = req.body.skip_permissions ? 1 : 0;
+    const result = db.prepare('UPDATE projects SET skip_permissions = ?, updated_at = datetime(\'now\')').run(val);
+    return { ok: true, updated: result.changes };
+  });
+
+  // Get ruflo disposition and detection status
+  app.get('/projects/ruflo-disposition', async () => {
+    const disposition = getSetting('ruflo_disposition');
+    const db = getDb();
+    const projects = db.prepare('SELECT path FROM projects').all() as { path: string }[];
+
+    let rufloDetected = false;
+    for (const p of projects) {
+      if (hasRufloArtifacts(p.path)) {
+        rufloDetected = true;
+        break;
+      }
+    }
+
+    return { disposition, rufloDetected };
+  });
+
+  // Set ruflo disposition
+  app.put<{
+    Body: { disposition: string };
+  }>('/projects/ruflo-disposition', async (req, reply) => {
+    const { disposition } = req.body as any;
+    if (!['undecided', 'keep', 'remove_all', 'removed'].includes(disposition)) {
+      return reply.status(400).send({ error: 'Invalid disposition. Must be: undecided, keep, remove_all, removed' });
+    }
+    const db = getDb();
+    db.prepare('INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value = excluded.value')
+      .run('ruflo_disposition', disposition);
+    return { ok: true, disposition };
+  });
+
+  // List available agent types for a project (reads .claude/agents/*.md from project + global)
   app.get<{
     Params: { id: string };
   }>('/projects/:id/ruflo-agents', async (req, reply) => {
@@ -910,12 +575,11 @@ npx @claude-flow/cli memory search \\
     const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as Project | undefined;
     if (!project) return reply.status(404).send({ error: 'Project not found' });
 
-    const agentsDir = join(project.path, '.claude', 'agents');
-    if (!existsSync(agentsDir)) return { agents: [] };
-
     const agents: { name: string; type: string; description: string; category: string }[] = [];
-    try {
-      const walkDir = async (dir: string, category: string) => {
+
+    const walkDir = async (dir: string, category: string) => {
+      if (!existsSync(dir)) return;
+      try {
         const entries = await readdir(dir, { withFileTypes: true });
         for (const entry of entries) {
           const fullPath = join(dir, entry.name);
@@ -937,11 +601,14 @@ npx @claude-flow/cli memory search \\
             } catch {}
           }
         }
-      };
-      await walkDir(agentsDir, 'core');
-    } catch {}
+      } catch {}
+    };
 
-    // Deduplicate by name (some agents have copies in subdirectories)
+    // Scan both global and project-level agent directories
+    await walkDir(join(homedir(), '.claude', 'agents'), 'global');
+    await walkDir(join(project.path, '.claude', 'agents'), 'project');
+
+    // Deduplicate by name (project-level overrides global)
     const seen = new Set<string>();
     const unique = agents.filter(a => {
       if (seen.has(a.name)) return false;
@@ -989,46 +656,11 @@ npx @claude-flow/cli memory search \\
     return { globalInstalled, statuses };
   });
 
-  // Install DevCortex for a project (runs the OctoAlly installer script)
+  // DEPRECATED: DevCortex install — no longer supported
   app.post<{
     Params: { id: string };
-  }>('/projects/:id/devcortex-install', async (req, reply) => {
-    const db = getDb();
-    const project = db.prepare('SELECT * FROM projects WHERE id = ?').get(req.params.id) as Project | undefined;
-    if (!project) return reply.status(404).send({ error: 'Project not found' });
-
-    // Read global config for the API key
-    const globalConfigPath = join(homedir(), '.config', 'devcortex', 'config.json');
-    if (!existsSync(globalConfigPath)) {
-      return reply.status(400).send({ error: 'DevCortex global config not found. Run the global setup first.' });
-    }
-
-    let globalConfig: { server_url?: string; api_key?: string };
-    try {
-      globalConfig = JSON.parse(readFileSync(globalConfigPath, 'utf-8'));
-    } catch {
-      return reply.status(500).send({ error: 'Failed to read DevCortex global config' });
-    }
-
-    if (!globalConfig.api_key || !globalConfig.server_url) {
-      return reply.status(400).send({ error: 'DevCortex global config missing api_key or server_url' });
-    }
-
-    // Run the OctoAlly-specific DevCortex installer via curl
-    const installUrl = `${globalConfig.server_url}/api/setup/install-octoally.sh?key=${globalConfig.api_key}`;
-    try {
-      const result = await execFileAsync('bash', ['-c', `curl -fsSL "${installUrl}" | bash`], {
-        cwd: project.path,
-        timeout: 60_000,
-        env: { ...process.env, HOME: homedir() },
-      });
-      // Patch relative/broken hook paths after DevCortex writes settings
-      const migrated = migrateSettingsHookPaths(project.path);
-      const output = result.stdout || 'DevCortex installed';
-      return { ok: true, output: migrated ? output + '\n' + migrated : output };
-    } catch (err: any) {
-      return reply.status(500).send({ ok: false, error: err.message || 'Install failed', output: err.stderr || '' });
-    }
+  }>('/projects/:id/devcortex-install', async (_req, reply) => {
+    return reply.status(410).send({ error: 'DevCortex installation has been deprecated.' });
   });
 
   // Uninstall DevCortex from a project (removes .devcortex file)

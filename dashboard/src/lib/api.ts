@@ -22,7 +22,7 @@ export const api = {
     list: (status?: string) =>
       fetchJSON<{ sessions: Session[] }>(`/sessions${status ? `?status=${status}` : ''}`),
     get: (id: string) => fetchJSON<{ session: Session }>(`/sessions/${id}`),
-    create: (data: { project_path: string; task?: string; mode?: 'hivemind' | 'terminal' | 'agent'; agent_type?: string; project_id?: string; cli_type?: 'claude' | 'codex' }) =>
+    create: (data: { project_path: string; task?: string; mode?: 'session' | 'terminal' | 'agent'; agent_type?: string; project_id?: string; cli_type?: 'claude' | 'codex' }) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions', {
         method: 'POST',
         body: JSON.stringify(data),
@@ -80,12 +80,12 @@ export const api = {
   },
   projects: {
     list: () => fetchJSON<{ projects: Project[] }>('/projects'),
-    create: (data: { name: string; path: string; description?: string; ruflo_prompt?: string; openclaw_prompt?: string; default_web_url?: string }) =>
+    create: (data: { name: string; path: string; description?: string; session_prompt?: string; openclaw_prompt?: string; default_web_url?: string; color?: string }) =>
       fetchJSON<{ ok: boolean; project: Project }>('/projects', {
         method: 'POST',
         body: JSON.stringify(data),
       }),
-    update: (id: string, data: { name?: string; description?: string; ruflo_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null }) =>
+    update: (id: string, data: { name?: string; description?: string; session_prompt?: string | null; openclaw_prompt?: string | null; default_web_url?: string | null; skip_permissions?: number; color?: string }) =>
       fetchJSON<{ ok: boolean; project: Project }>(`/projects/${id}`, {
         method: 'PATCH',
         body: JSON.stringify(data),
@@ -94,26 +94,26 @@ export const api = {
       fetchJSON<{ ok: boolean }>(`/projects/${id}`, { method: 'DELETE' }),
     browse: (path?: string) =>
       fetchJSON<BrowseResult>(`/browse${path ? `?path=${encodeURIComponent(path)}` : ''}`),
-    rufloStatus: () =>
-      fetchJSON<RufloStatusResponse>('/projects/ruflo-status'),
-    rufloCheck: (id: string) =>
-      fetchJSON<{ settingsJson: boolean; claudeMd: boolean; agentsMd: boolean }>(`/projects/${id}/ruflo-check`),
     rufloAgents: (id: string) =>
       fetchJSON<{ agents: RufloAgent[] }>(`/projects/${id}/ruflo-agents`),
-    rufloUpdate: () =>
-      fetchJSON<{ ok: boolean; version: string }>('/projects/ruflo-update', { method: 'POST' }),
-    rufloInstall: (id: string, mode: 'merge' | 'overwrite' = 'overwrite') =>
-      fetchJSON<{ ok: boolean; output: string }>(`/projects/${id}/ruflo-install`, {
-        method: 'POST',
-        body: JSON.stringify({ mode }),
+    rufloUninstall: (id: string) =>
+      fetchJSON<{ ok: boolean; cleaned: string[] }>(`/projects/${id}/ruflo-uninstall`, { method: 'POST' }),
+    rufloUninstallAll: () =>
+      fetchJSON<{ ok: boolean; projectsCleaned: number; globalCleaned: string[] }>('/projects/ruflo-uninstall-all', { method: 'POST' }),
+    rufloDisposition: () =>
+      fetchJSON<{ disposition: string; rufloDetected: boolean }>('/projects/ruflo-disposition'),
+    setRufloDisposition: (disposition: string) =>
+      fetchJSON<{ ok: boolean; disposition: string }>('/projects/ruflo-disposition', {
+        method: 'PUT',
+        body: JSON.stringify({ disposition }),
+      }),
+    setSkipPermissionsAll: (skipPermissions: boolean) =>
+      fetchJSON<{ ok: boolean; updated: number }>('/projects/skip-permissions-all', {
+        method: 'PUT',
+        body: JSON.stringify({ skip_permissions: skipPermissions }),
       }),
     devcortexStatus: () =>
       fetchJSON<DevcortexStatusResponse>('/projects/devcortex-status'),
-    devcortexInstall: (id: string) =>
-      fetchJSON<{ ok: boolean; output: string }>(`/projects/${id}/devcortex-install`, {
-        method: 'POST',
-        body: JSON.stringify({}),
-      }),
     devcortexUninstall: (id: string) =>
       fetchJSON<{ ok: boolean }>(`/projects/${id}/devcortex`, { method: 'DELETE' }),
   },
@@ -235,6 +235,11 @@ export const api = {
         method: 'PUT',
         body: JSON.stringify({ settings }),
       }),
+    statusline: {
+      get: () => fetchJSON<{ installed: boolean }>('/settings/statusline'),
+      install: () => fetchJSON<{ ok: boolean; scriptPath: string }>('/settings/statusline/install', { method: 'POST' }),
+      uninstall: () => fetchJSON<{ ok: boolean; removed: string[] }>('/settings/statusline/uninstall', { method: 'POST' }),
+    },
   },
   health: () => fetchJSON<{ name: string; version: string; status: string; uptime?: number; reconnecting?: boolean; reconnectTotal?: number; reconnectDone?: number }>('/health'),
   openFolder: (path: string) =>
@@ -285,9 +290,11 @@ export interface Project {
   name: string;
   path: string;
   description: string | null;
-  ruflo_prompt: string | null;
+  session_prompt: string | null;
   openclaw_prompt: string | null;
   default_web_url: string | null;
+  skip_permissions: number;
+  color: string;
   created_at: string;
 }
 
@@ -345,13 +352,6 @@ export interface RufloProjectStatus {
   codexReady?: boolean;
   sonaPatchVersion?: number;
   sonaPatchOutdated?: boolean;
-}
-
-export interface RufloStatusResponse {
-  statuses: Record<string, RufloProjectStatus>;
-  rufloVersion?: string | null;
-  rufloLatestVersion?: string | null;
-  rufloUpdateAvailable?: boolean;
 }
 
 export interface DevcortexProjectStatus {

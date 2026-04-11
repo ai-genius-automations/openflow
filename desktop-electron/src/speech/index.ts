@@ -69,7 +69,15 @@ interface SttConfig {
 }
 
 function configPath(): string {
-  return path.join(os.homedir(), '.octoally', 'stt-config.json');
+  const p = path.join(os.homedir(), '.octoally', 'stt-config.json');
+  // Remove broken symlink (leftover from hivecommand migration)
+  try {
+    const stat = fs.lstatSync(p);
+    if (stat.isSymbolicLink() && !fs.existsSync(p)) {
+      fs.unlinkSync(p);
+    }
+  } catch { /* doesn't exist — fine */ }
+  return p;
 }
 
 function loadConfig(): Partial<SttConfig> {
@@ -479,27 +487,16 @@ export function registerSpeechHandlers() {
       throw new Error(`Unknown mode: ${mode}. Use 'global', 'push-to-talk', or 'wake-word'.`);
     }
 
-    // Ensure whisper binary exists (needed for all modes)
-    if (!state.whisperBin) {
+    // Ensure whisper binary exists (needed for local backend and wake-word mode)
+    const needsWhisper = state.backend === 'local' || mode === 'wake-word';
+    if (needsWhisper && !state.whisperBin) {
       state.whisperBin = findWhisperBinary();
       if (!state.whisperBin) {
-        emit('stt://whisper-install-progress', {
-          stage: 'downloading',
-          percent: 0,
-          message: 'whisper.cpp not found — downloading and building...',
-        });
-
-        try {
-          state.whisperBin = await installWhisperBinary((progress) => {
-            emit('stt://whisper-install-progress', progress);
-          });
-        } catch (e) {
-          throw new Error(
-            `Failed to auto-install whisper.cpp: ${e}. ` +
-            'You can install manually: sudo apt install cmake g++ && ' +
-            'or place whisper-cli in ~/.octoally/bin/',
-          );
-        }
+        throw new Error(
+          'WHISPER_NOT_INSTALLED: Local whisper model is required for this feature. ' +
+          'Please install it from Speech Settings before using ' +
+          (mode === 'wake-word' ? 'wake word mode.' : 'local transcription.'),
+        );
       }
     }
 
@@ -507,13 +504,10 @@ export function registerSpeechHandlers() {
       // Wake word mode: need tiny model for wake detection
       const tinyPath = modelPath('tiny');
       if (!fs.existsSync(tinyPath)) {
-        // Auto-download tiny model (75MB, fast)
-        console.error('[STT] Tiny model not found — downloading for wake word detection...');
-        emit('stt://download-progress', { percent: 0, bytesDone: 0, bytesTotal: 0 });
-        await downloadFile(modelDownloadUrl('tiny'), tinyPath, (progress) => {
-          emit('stt://download-progress', progress);
-        });
-        console.error('[STT] Tiny model downloaded');
+        throw new Error(
+          'WHISPER_MODEL_MISSING: The tiny whisper model is required for wake word detection. ' +
+          'Please download it from Speech Settings.',
+        );
       }
 
       // Determine command backend

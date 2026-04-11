@@ -135,9 +135,11 @@ done
 
 # --- Remove shell function from .bashrc / .zshrc ------------------------------
 
-# Remove both OctoAlly and legacy HiveCommand shell functions
-FUNC_MARKER_OCTOALLY="# OctoAlly hivemind launcher function"
-FUNC_END_OCTOALLY="# end-octoally-hivemind"
+# Remove all OctoAlly and legacy shell functions
+FUNC_MARKER_OCTOALLY="# OctoAlly session launcher function"
+FUNC_END_OCTOALLY="# end-octoally-session"
+FUNC_MARKER_OCTOALLY_OLD="# OctoAlly hivemind launcher function"
+FUNC_END_OCTOALLY_OLD="# end-octoally-hivemind"
 FUNC_MARKER_HIVECOMMAND="# HiveCommand hivemind launcher function"
 FUNC_END_HIVECOMMAND="# end-hivecommand-hivemind"
 
@@ -145,7 +147,7 @@ remove_shell_func() {
   local rc_file="$1"
   [ -f "$rc_file" ] || return 0
 
-  # Remove OctoAlly function
+  # Remove current OctoAlly function
   if grep -q "$FUNC_MARKER_OCTOALLY" "$rc_file" 2>/dev/null; then
     if grep -q "$FUNC_END_OCTOALLY" "$rc_file" 2>/dev/null; then
       sed -i "/$FUNC_MARKER_OCTOALLY/,/$FUNC_END_OCTOALLY/d" "$rc_file"
@@ -153,6 +155,16 @@ remove_shell_func() {
       sed -i "/$FUNC_MARKER_OCTOALLY/,/^}/d" "$rc_file"
     fi
     log_ok "Removed OctoAlly shell function from $(basename "$rc_file")"
+  fi
+
+  # Remove old OctoAlly hivemind function
+  if grep -q "$FUNC_MARKER_OCTOALLY_OLD" "$rc_file" 2>/dev/null; then
+    if grep -q "$FUNC_END_OCTOALLY_OLD" "$rc_file" 2>/dev/null; then
+      sed -i "/$FUNC_MARKER_OCTOALLY_OLD/,/$FUNC_END_OCTOALLY_OLD/d" "$rc_file"
+    else
+      sed -i "/$FUNC_MARKER_OCTOALLY_OLD/,/^}/d" "$rc_file"
+    fi
+    log_ok "Removed old OctoAlly hivemind function from $(basename "$rc_file")"
   fi
 
   # Remove legacy HiveCommand function

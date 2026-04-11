@@ -1,6 +1,6 @@
 {
   "name": "octoally",
-  "version": "1.0.60",
+  "version": "1.0.64",
   "description": "AI coding session orchestration dashboard — launch, monitor, and manage Claude Code & OpenAI Codex sessions from a web UI",
   "type": "module",
   "bin": {
@@ -45,6 +45,10 @@
   "repository": {
     "type": "git",
     "url": "git+https://github.com/ai-genius-automations/octoally.git"
+  },
+  "overrides": {
+    "hono": ">=4.12.12",
+    "@hono/node-server": ">=1.19.13"
   },
   "dependencies": {
     "@xterm/addon-web-links": "^0.12.0"

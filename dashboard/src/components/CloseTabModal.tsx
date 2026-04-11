@@ -2,10 +2,10 @@ import { useEffect, useRef } from 'react';
 import { AlertTriangle, EyeOff, Trash2 } from 'lucide-react';
 
 interface CloseTabModalProps {
-  /** e.g. "Hivemind 1", "Terminal 2" */
+  /** e.g. "Session 1", "Terminal 2" */
   label: string;
-  /** e.g. "hivemind", "terminal", "project" */
-  type: 'hivemind' | 'terminal' | 'agent' | 'project';
+  /** e.g. "session", "terminal", "project" */
+  type: 'session' | 'terminal' | 'agent' | 'project';
   /** Number of running sessions (only for project type) */
   sessionCount?: number;
   /** Called when user picks "Hide Tab" */
@@ -36,7 +36,7 @@ export function CloseTabModal({
   }, [onCancel]);
 
   const isProject = type === 'project';
-  const typeLabel = type === 'hivemind' ? 'hive-mind' : type;
+  const typeLabel = type;
 
   const message = isProject
     ? `This project has ${sessionCount} running session${sessionCount !== 1 ? 's' : ''}. You can hide the tab (sessions keep running in the background) or close and terminate all sessions.`

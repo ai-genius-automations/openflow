@@ -197,7 +197,7 @@ Content-Type: application/json
               <Rule>NEVER read PTY output directly, scrape temp files, or parse raw terminal data.</Rule>
               <Rule>Check <code>processState</code> before sending input — if <code>busy</code>, wait.</Rule>
               <Rule>When <code>promptType</code> is <code>choice</code>, use the <code>choices</code> array to pick the right option number.</Rule>
-              <Rule>Use <code>timeout: 60000</code> and <code>quiescenceMs: 5000</code> for hive-mind sessions (they are slower than raw Claude Code).</Rule>
+              <Rule>Use <code>timeout: 60000</code> and <code>quiescenceMs: 5000</code> for sessions (they are slower than raw Claude Code).</Rule>
             </ul>
           </Section>
 
@@ -408,7 +408,7 @@ This is the single source of truth for agent integration. It includes all endpoi
 - NEVER read PTY output directly, scrape temp files, or parse raw terminal data.
 - Check processState before sending input — if "busy", wait.
 - When promptType is "choice", use the choices array to pick the right option number.
-- Use timeout: 60000 and quiescenceMs: 5000 for hive-mind sessions (they are slower than raw Claude Code).
+- Use timeout: 60000 and quiescenceMs: 5000 for sessions (they are slower than raw Claude Code).
 
 ## Reading Output (Display vs Execute)
 GET /sessions/:id/display — Read-only. Returns the last N lines of rendered terminal text plus inline state (processState, promptType, choices) in a single call. Use the cursor value for incremental polling — pass it back as ?since=cursor to only get new content. This is the RECOMMENDED way to monitor what a session is doing.
@@ -539,7 +539,7 @@ GET ${baseUrl}/api/agent/capabilities
 - NEVER read PTY output directly, scrape temp files, or parse raw terminal data.
 - Check processState before sending input — if "busy", wait.
 - When promptType is "choice", use the choices array to pick the right option number.
-- Use timeout: 60000 and quiescenceMs: 5000 for hive-mind sessions (they are slower than raw Claude Code).
+- Use timeout: 60000 and quiescenceMs: 5000 for sessions (they are slower than raw Claude Code).
 
 ## Reading Output (Display vs Execute)
 GET /sessions/:id/display — Read-only. Returns the last N lines of rendered terminal text plus inline state. Use the cursor value for incremental polling. This is the RECOMMENDED way to monitor what a session is doing.

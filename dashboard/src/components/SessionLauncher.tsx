@@ -1,19 +1,18 @@
 import { useState, useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api, type Project, type RufloAgent } from '../lib/api';
-import { Play, Loader2, Bot, TerminalSquare, Globe, Users, X, FolderOpen, GitBranch, Cpu, Activity, FileText, Zap, Brain, Download } from 'lucide-react';
+import { Play, Loader2, Bot, TerminalSquare, Globe, Users, X, FolderOpen, GitBranch, Cpu, Activity, FileText, Zap } from 'lucide-react';
 import { ClaudeIcon, CodexIcon } from './CliIcons';
 import { AgentGuideModal } from './AgentGuide';
-import { ConfirmModal } from './ConfirmModal';
 import { SessionMicButton } from './SessionMicButton';
 
 interface SessionLauncherProps {
   project: Project;
-  onSessionCreated: (sessionId: string, projectName?: string, mode?: 'hivemind' | 'terminal') => void;
+  onSessionCreated: (sessionId: string, projectName?: string, mode?: 'session' | 'terminal') => void;
   onWebPageCreated?: (url: string) => void;
 }
 
-type LaunchMode = 'hivemind' | 'agent' | null;
+type LaunchMode = 'session' | 'agent' | null;
 
 function TaskModal({
   mode,
@@ -35,7 +34,7 @@ function TaskModal({
   const [task, setTask] = useState('');
   const [agentType, setAgentType] = useState(agents[0]?.name || 'coder');
   const [cliType, setCliType] = useState<'claude' | 'codex'>(initialCliType || 'claude');
-  const [sessionRufloPrompt, setSessionRufloPrompt] = useState<string | null>(null);
+  const [sessionPrompt, setSessionPrompt] = useState<string | null>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -47,10 +46,10 @@ function TaskModal({
     return () => window.removeEventListener('keydown', handleKey);
   }, [onClose]);
 
-  const cfPrompt = (sessionRufloPrompt ?? project.ruflo_prompt ?? '').trim();
+  const sessionPromptVal = (sessionPrompt ?? project.session_prompt ?? '').trim();
   const effectiveTask = task.trim() || 'Start up and ask me what I want you to do and NOTHING ELSE';
-  const finalTask = cfPrompt
-    ? `${effectiveTask}\n\n---\nAdditional Instructions:\n${cfPrompt}`
+  const finalTask = sessionPromptVal
+    ? `${effectiveTask}\n\n---\nAdditional Instructions:\n${sessionPromptVal}`
     : effectiveTask;
 
   const handleLaunch = () => {
@@ -79,7 +78,7 @@ function TaskModal({
               <Zap className="w-5 h-5" style={{ color: '#60a5fa' }} />
             )}
             <h2 className="text-lg font-semibold" style={{ color: 'var(--text-primary)' }}>
-              {mode === 'agent' ? 'Launch Agent' : 'Launch Hive Mind'}
+              {mode === 'agent' ? 'Launch Agent' : 'Launch Session'}
             </h2>
           </div>
           <button onClick={onClose} className="p-1 rounded hover:bg-white/10" style={{ color: 'var(--text-secondary)' }}>
@@ -117,11 +116,6 @@ function TaskModal({
                 Codex
               </button>
             </div>
-            {cliType === 'codex' && !codexReady && (
-              <span className="text-[10px] px-2 py-0.5 rounded" style={{ color: '#f59e0b', background: '#f59e0b15' }}>
-                Project not initialized for Codex — re-init with RuFlo to enable
-              </span>
-            )}
           </div>
 
           {/* Info box */}
@@ -129,14 +123,14 @@ function TaskModal({
             className="rounded-lg border p-4 space-y-2"
             style={{ background: 'var(--bg-primary)', borderColor: mode === 'agent' ? '#ef4444' : '#60a5fa', borderWidth: '1px' }}
           >
-            {mode === 'hivemind' ? (
+            {mode === 'session' ? (
               <>
                 <div className="flex items-center gap-2 text-sm font-medium" style={{ color: '#60a5fa' }}>
                   <Zap className="w-4 h-4" />
-                  Multi-Agent Orchestration
+                  Interactive Session
                 </div>
                 <div className="text-sm" style={{ color: 'var(--text-secondary)' }}>
-                  Hive Mind launches a queen-led swarm that coordinates multiple specialized agents working in parallel. Best for large features, refactors, or complex tasks spanning multiple files.
+                  Launches an interactive Claude or Codex session for your project. Best for general development, debugging, and tasks you want to guide directly.
                 </div>
               </>
             ) : (
@@ -182,7 +176,7 @@ function TaskModal({
               ref={textareaRef}
               value={task}
               onChange={(e) => setTask(e.target.value)}
-              placeholder={`Describe what you want ${mode === 'agent' ? `the ${agentType} agent` : 'the hive mind'} to do...\n\nLeave empty to use default: "Start up and ask me what I want you to do"`}
+              placeholder={`Describe what you want ${mode === 'agent' ? `the ${agentType} agent` : 'Claude'} to do...\n\nLeave empty to use default: "Start up and ask me what I want you to do"`}
               rows={5}
               className="w-full px-4 py-3 rounded-lg border text-sm outline-none resize-y"
               style={{
@@ -221,8 +215,8 @@ function TaskModal({
               </span>
             </div>
             <textarea
-              value={sessionRufloPrompt ?? project.ruflo_prompt ?? ''}
-              onChange={(e) => setSessionRufloPrompt(e.target.value)}
+              value={sessionPrompt ?? project.session_prompt ?? ''}
+              onChange={(e) => setSessionPrompt(e.target.value)}
               placeholder={`Additional instructions prepended to the task (supplements your project's ${cliType === 'codex' ? 'AGENTS.md' : 'CLAUDE.md'})...`}
               rows={2}
               className="w-full px-4 py-3 rounded-lg border text-sm outline-none resize-y"
@@ -232,7 +226,7 @@ function TaskModal({
                 color: 'var(--text-primary)',
               }}
             />
-            {sessionRufloPrompt !== null && (
+            {sessionPrompt !== null && (
               <p className="text-xs mt-1" style={{ color: 'var(--text-secondary)' }}>
                 Modified for this session only.
               </p>
@@ -279,103 +273,16 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
   const [launchMode, setLaunchMode] = useState<LaunchMode>(null);
   const queryClient = useQueryClient();
 
-  // Check ruflo install status
-  const { data: rufloData } = useQuery({
-    queryKey: ['ruflo-status'],
-    queryFn: () => api.projects.rufloStatus(),
-    staleTime: 60_000,
-  });
-  const rufloStatus = rufloData?.statuses?.[project.id];
-  const rufloInstalled = rufloStatus?.installed ?? false;
-
-  // Fetch available agent types for this project
+  // Fetch available agent types for this project (reads .claude/agents/ — standard Claude Code feature)
   const { data: agentsData } = useQuery({
-    queryKey: ['ruflo-agents', project.id],
+    queryKey: ['project-agents', project.id],
     queryFn: () => api.projects.rufloAgents(project.id),
     staleTime: 120_000,
-    enabled: rufloInstalled,
   });
   const agents = agentsData?.agents ?? [];
-  const hasAgents = agents.length > 0;
-
-  // Check DevCortex status
-  const { data: devcortexData } = useQuery({
-    queryKey: ['devcortex-status'],
-    queryFn: () => api.projects.devcortexStatus(),
-    staleTime: 60_000,
-  });
-  const devcortexStatus = devcortexData?.statuses?.[project.id];
-  const devcortexInstalled = devcortexStatus?.installed ?? false;
-  const devcortexEligible = devcortexStatus?.eligible ?? false;
-  const devcortexVersion = devcortexStatus?.version;
-
-  const devcortexInstallMutation = useMutation({
-    mutationFn: (id: string) => api.projects.devcortexInstall(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['devcortex-status'] });
-    },
-    onError: (err: Error) => {
-      alert(`Failed to install DevCortex: ${err.message}`);
-    },
-  });
-
-  const devcortexUninstallMutation = useMutation({
-    mutationFn: (id: string) => api.projects.devcortexUninstall(id),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ['devcortex-status'] });
-    },
-    onError: (err: Error) => {
-      alert(`Failed to uninstall DevCortex: ${err.message}`);
-    },
-  });
-
-  const devcortexPending = devcortexInstallMutation.isPending || devcortexUninstallMutation.isPending;
-
-  // Reinit state
-  const [showReinitConfirm, setShowReinitConfirm] = useState(false);
-  const [reinitConflicts, setReinitConflicts] = useState<{ settingsJson: boolean; claudeMd: boolean; agentsMd: boolean } | null>(null);
-  const [reinitPending, setReinitPending] = useState(false);
-  const [reinstallDevcortex, setReinstallDevcortex] = useState(true);
-
-  const reinitMutation = useMutation({
-    mutationFn: () => api.projects.rufloInstall(project.id),
-    onSuccess: async () => {
-      queryClient.invalidateQueries({ queryKey: ['ruflo-status'] });
-      queryClient.invalidateQueries({ queryKey: ['ruflo-agents', project.id] });
-      setShowReinitConfirm(false);
-      // Auto-reinstall DevCortex hooks if checkbox was checked and DevCortex is installed
-      if (reinstallDevcortex && devcortexInstalled) {
-        try {
-          await devcortexInstallMutation.mutateAsync(project.id);
-        } catch {
-          // DevCortex reinstall failed — ruflo reinit still succeeded
-        }
-      }
-      setReinitPending(false);
-    },
-    onError: () => {
-      setReinitPending(false);
-    },
-  });
-
-  const handleReinit = async () => {
-    setReinitPending(true);
-    try {
-      const conflicts = await api.projects.rufloCheck(project.id);
-      if (conflicts.settingsJson || conflicts.claudeMd || conflicts.agentsMd) {
-        setReinitConflicts(conflicts);
-        setShowReinitConfirm(true);
-        setReinitPending(false);
-      } else {
-        reinitMutation.mutate();
-      }
-    } catch {
-      reinitMutation.mutate();
-    }
-  };
 
   const createMutation = useMutation({
-    mutationFn: (opts: { task: string; mode: 'hivemind' | 'agent'; agentType?: string; cliType?: 'claude' | 'codex' }) => {
+    mutationFn: (opts: { task: string; mode: 'session' | 'agent'; agentType?: string; cliType?: 'claude' | 'codex' }) => {
       return api.sessions.create({
         project_path: project.path,
         task: opts.task,
@@ -389,7 +296,7 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
       queryClient.invalidateQueries({ queryKey: ['sessions'] });
       setLaunchMode(null);
       if (data.session?.id) {
-        onSessionCreated(data.session.id, undefined, 'hivemind');
+        onSessionCreated(data.session.id, undefined, 'session');
       }
     },
   });
@@ -407,13 +314,13 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
   });
 
   const handleLaunch = (task: string, agentType?: string, cliType?: 'claude' | 'codex') => {
-    const mode = agentType ? 'agent' : 'hivemind';
+    const mode = agentType ? 'agent' : 'session';
     createMutation.mutate({ task, mode, agentType, cliType });
   };
 
   const ocPrompt = (project.openclaw_prompt ?? '').trim();
-  const cfPrompt = (project.ruflo_prompt ?? '').trim();
-  const instructions = [cfPrompt, ocPrompt].filter(Boolean).join('\n\n') || undefined;
+  const sessionPromptVal = (project.session_prompt ?? '').trim();
+  const instructions = [sessionPromptVal, ocPrompt].filter(Boolean).join('\n\n') || undefined;
 
   // Fetch git status for project info (may fail if not a git repo)
   const { data: gitData, isError: gitError } = useQuery({
@@ -458,86 +365,13 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
               )}
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              {rufloInstalled ? (
-                <button
-                  onClick={handleReinit}
-                  disabled={reinitPending || reinitMutation.isPending}
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors${rufloData?.rufloUpdateAvailable ? ' animate-pulse' : ''}`}
-                  style={rufloData?.rufloUpdateAvailable
-                    ? { background: '#f59e0b20', color: '#f59e0b', border: '1px solid #f59e0b44' }
-                    : { background: 'rgba(34,197,94,0.15)', color: 'var(--success)', border: '1px solid rgba(34,197,94,0.3)' }
-                  }
-                  title={rufloData?.rufloUpdateAvailable
-                    ? `RuFlo update: v${rufloData.rufloVersion} → v${rufloData.rufloLatestVersion} — click to update`
-                    : 'RuFlo is active — click to reinitialize'
-                  }
-                >
-                  {reinitPending || reinitMutation.isPending ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <Cpu className="w-3 h-3" />
-                  )}
-                  {rufloData?.rufloUpdateAvailable ? 'RuFlo Update' : 'RuFlo Active'}
-                </button>
-              ) : (
-                <span
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
-                  style={{ background: 'rgba(107,114,128,0.15)', color: 'var(--text-secondary)' }}
-                >
-                  <Cpu className="w-3 h-3" />
-                  RuFlo Not Installed
-                </span>
-              )}
-              {devcortexData?.globalInstalled && devcortexEligible && (
-                devcortexInstalled ? (
-                  <button
-                    onClick={() => devcortexUninstallMutation.mutate(project.id)}
-                    disabled={devcortexPending}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
-                    style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}
-                    title={`DevCortex${devcortexVersion ? ` v${devcortexVersion}` : ''} — click to remove`}
-                  >
-                    {devcortexPending ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Brain className="w-3 h-3" />
-                    )}
-                    DevCortex{devcortexVersion ? ` v${devcortexVersion}` : ''}
-                  </button>
-                ) : (
-                  <button
-                    onClick={() => devcortexInstallMutation.mutate(project.id)}
-                    disabled={devcortexPending}
-                    className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors"
-                    style={{ background: 'rgba(168,85,247,0.15)', color: '#a855f7', border: '1px solid rgba(168,85,247,0.3)' }}
-                    title="Install DevCortex dev logging for this project"
-                  >
-                    {devcortexPending ? (
-                      <Loader2 className="w-3 h-3 animate-spin" />
-                    ) : (
-                      <Download className="w-3 h-3" />
-                    )}
-                    Add DevCortex
-                  </button>
-                )
-              )}
-              {/* Codex not initialized — prompt to re-init */}
-              {rufloInstalled && !rufloStatus?.codexReady && (
-                <button
-                  onClick={handleReinit}
-                  disabled={reinitPending || reinitMutation.isPending}
-                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium transition-colors animate-pulse"
-                  style={{ background: 'rgba(16,185,129,0.1)', color: '#10b981', border: '1px dashed rgba(16,185,129,0.4)' }}
-                  title="Re-init RuFlo to enable Codex CLI support"
-                >
-                  {reinitPending || reinitMutation.isPending ? (
-                    <Loader2 className="w-3 h-3 animate-spin" />
-                  ) : (
-                    <CodexIcon className="w-3 h-3" />
-                  )}
-                  + Codex
-                </button>
-              )}
+              <span
+                className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium"
+                style={{ background: 'rgba(34,197,94,0.15)', color: 'var(--success)' }}
+              >
+                <Cpu className="w-3 h-3" />
+                Ready
+              </span>
             </div>
           </div>
 
@@ -600,7 +434,7 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
                 <span className="text-[10px] font-medium uppercase tracking-wider" style={{ color: 'var(--text-secondary)' }}>Agents</span>
               </div>
               <p className="text-xs" style={{ color: agents.length > 0 ? 'var(--text-primary)' : 'var(--text-secondary)' }}>
-                {agents.length > 0 ? `${agents.length} available` : rufloInstalled ? '0 (run init --start-all)' : 'N/A'}
+                {agents.length > 0 ? `${agents.length} available` : 'None'}
               </p>
             </div>
           </div>
@@ -608,38 +442,32 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
 
         {/* Launch buttons */}
         <div className="flex items-center gap-3">
-          {rufloInstalled && (
-            <>
-              <button
-                onClick={() => setLaunchMode('hivemind')}
-                disabled={createMutation.isPending}
-                className={btnBase}
-                style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
-              >
-                {createMutation.isPending && launchMode === 'hivemind' ? (
-                  <Loader2 className="w-4 h-4 animate-spin" />
-                ) : (
-                  <Zap className="w-4 h-4" style={{ color: '#60a5fa' }} />
-                )}
-                Launch Hive Mind
-              </button>
-              {hasAgents && (
-                <button
-                  onClick={() => setLaunchMode('agent')}
-                  disabled={createMutation.isPending}
-                  className={btnBase}
-                  style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
-                >
-                  {createMutation.isPending && launchMode === 'agent' ? (
-                    <Loader2 className="w-4 h-4 animate-spin" />
-                  ) : (
-                    <Bot className="w-4 h-4" style={{ color: '#ef4444' }} />
-                  )}
-                  Launch Agent
-                </button>
-              )}
-            </>
-          )}
+          <button
+            onClick={() => setLaunchMode('session')}
+            disabled={createMutation.isPending}
+            className={btnBase}
+            style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+          >
+            {createMutation.isPending && launchMode === 'session' ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Zap className="w-4 h-4" style={{ color: '#60a5fa' }} />
+            )}
+            Launch Session
+          </button>
+          <button
+            onClick={() => setLaunchMode('agent')}
+            disabled={createMutation.isPending}
+            className={btnBase}
+            style={{ background: 'var(--bg-tertiary)', borderColor: 'var(--border)', color: 'var(--text-primary)' }}
+          >
+            {createMutation.isPending && launchMode === 'agent' ? (
+              <Loader2 className="w-4 h-4 animate-spin" />
+            ) : (
+              <Bot className="w-4 h-4" style={{ color: '#ef4444' }} />
+            )}
+            Launch Agent
+          </button>
           <button
             onClick={() => terminalMutation.mutate()}
             disabled={terminalMutation.isPending}
@@ -664,12 +492,6 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
             Run with OpenClaw
           </button>
         </div>
-
-        {!rufloInstalled && (
-          <p className="text-xs text-center" style={{ color: 'var(--text-secondary)' }}>
-            Install RuFlo from the dashboard to enable Hive Mind and Agent sessions.
-          </p>
-        )}
 
         {/* Web page section */}
         {onWebPageCreated && (() => {
@@ -737,7 +559,7 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
             mode={launchMode}
             project={project}
             agents={agents}
-            codexReady={rufloStatus?.codexReady ?? false}
+            codexReady={true}
             onClose={() => setLaunchMode(null)}
             onLaunch={handleLaunch}
           />
@@ -753,40 +575,6 @@ export function SessionLauncher({ project, onSessionCreated, onWebPageCreated }:
           />
         )}
 
-        {/* RuFlo reinit confirm modal */}
-        {showReinitConfirm && reinitConflicts && (
-          <ConfirmModal
-            title="Reinitialize RuFlo"
-            message={`This will run ruflo init --force --dual which overwrites config files for both Claude and Codex. The following will be backed up (.bak) then replaced:\n\n${reinitConflicts.claudeMd ? '  - CLAUDE.md\n' : ''}${reinitConflicts.agentsMd ? '  - AGENTS.md\n' : ''}${reinitConflicts.settingsJson ? '  - .claude/settings.json\n' : ''}\nExisting backups will be created with timestamps before overwriting.`}
-            confirmLabel="Reinitialize"
-            variant="warning"
-            onConfirm={() => {
-              setShowReinitConfirm(false);
-              reinitMutation.mutate();
-            }}
-            onCancel={() => {
-              setShowReinitConfirm(false);
-              setReinitConflicts(null);
-              setReinstallDevcortex(true);
-            }}
-          >
-            {devcortexInstalled && (
-              <label
-                className="flex items-center gap-2 mt-3 cursor-pointer select-none"
-                style={{ color: 'var(--text-secondary)' }}
-              >
-                <input
-                  type="checkbox"
-                  checked={reinstallDevcortex}
-                  onChange={(e) => setReinstallDevcortex(e.target.checked)}
-                  className="rounded"
-                  style={{ accentColor: '#a855f7' }}
-                />
-                <span className="text-xs">Reinstall DevCortex hooks after re-init</span>
-              </label>
-            )}
-          </ConfirmModal>
-        )}
       </div>
     </div>
   );

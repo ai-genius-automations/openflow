@@ -19,6 +19,9 @@ dist/
 CLAUDE.md.*.bak
 *.tar.gz
 
+# TypeScript build cache
+*.tsbuildinfo
+
 # Codex local configuration
 .codex/
 .agents/

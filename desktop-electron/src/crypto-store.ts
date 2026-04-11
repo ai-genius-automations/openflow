@@ -42,6 +42,15 @@ function keyfilePath(): string {
   // Prefer new path; fall back to legacy path for migration
   const newPath = path.join(os.homedir(), '.octoally', '.keyfile');
   const legacyPath = path.join(os.homedir(), '.hivecommand', '.keyfile');
+
+  // Remove broken symlink (e.g. leftover from hivecommand migration)
+  try {
+    const stat = fs.lstatSync(newPath);
+    if (stat.isSymbolicLink() && !fs.existsSync(newPath)) {
+      fs.unlinkSync(newPath);
+    }
+  } catch { /* doesn't exist at all — fine */ }
+
   if (!fs.existsSync(newPath) && fs.existsSync(legacyPath)) {
     return legacyPath;
   }

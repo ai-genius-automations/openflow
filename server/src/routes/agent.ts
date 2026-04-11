@@ -159,7 +159,7 @@ export const agentRoutes: FastifyPluginAsync = async (app) => {
         ],
       },
       execTimeouts: {
-        description: 'Always set explicit timeouts on execute calls. Long-running shell commands inside ruflo can hang indefinitely.',
+        description: 'Always set explicit timeouts on execute calls. Long-running shell commands can hang indefinitely.',
         defaults: { timeout: 30000, quiescenceMs: 2000 },
         forSlowCommands: { timeout: 120000, quiescenceMs: 5000 },
       },
