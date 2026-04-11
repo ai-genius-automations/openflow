@@ -355,11 +355,40 @@ async function start() {
 
   app.get('/api/health', async () => {
     const reconnect = getReconnectStatus();
+
+    // DB connectivity check
+    let db: { connected: boolean; latency_ms?: number; error?: string };
+    try {
+      const t0 = performance.now();
+      getDb().prepare('SELECT 1').get();
+      db = { connected: true, latency_ms: Math.round((performance.now() - t0) * 10) / 10 };
+    } catch (err: any) {
+      db = { connected: false, error: err?.message || 'unknown' };
+    }
+
+    // Memory usage
+    const mem = process.memoryUsage();
+    const memory = {
+      rss_mb: Math.round(mem.rss / 1048576),
+      heap_used_mb: Math.round(mem.heapUsed / 1048576),
+      heap_total_mb: Math.round(mem.heapTotal / 1048576),
+    };
+
+    // Event loop lag via setTimeout(0)
+    const event_loop_lag_ms = await new Promise<number>((resolve) => {
+      const start = performance.now();
+      setTimeout(() => resolve(Math.round((performance.now() - start) * 10) / 10), 0);
+    });
+
     return {
       name: 'octoally',
       version: serverVersion,
       status: 'running',
       uptime: process.uptime(),
+      uptime_s: Math.round(process.uptime()),
+      db,
+      memory,
+      event_loop_lag_ms,
       reconnecting: reconnect.reconnecting,
       reconnectTotal: reconnect.total,
       reconnectDone: reconnect.done,
