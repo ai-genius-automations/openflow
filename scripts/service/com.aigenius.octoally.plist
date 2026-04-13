@@ -7,8 +7,9 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
-    <string>__OCTOALLY_DIR__/server/dist/index.js</string>
+    <string>/bin/sh</string>
+    <string>-c</string>
+    <string>(/usr/local/bin/node -e "require('better-sqlite3')" 2&gt;/dev/null || /usr/local/bin/npm rebuild better-sqlite3) &amp;&amp; exec /usr/local/bin/node __OCTOALLY_DIR__/server/dist/index.js</string>
   </array>
 
   <key>WorkingDirectory</key>

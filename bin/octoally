@@ -63,6 +63,20 @@ cmd_start() {
   log_info "Starting OctoAlly server..."
   mkdir -p "$OCTOALLY_DIR/logs"
   cd "$OCTOALLY_DIR/server"
+
+  # Native module guard: if better-sqlite3 fails to load (e.g., Node version
+  # changed since install via apt/brew/nvm, causing NODE_MODULE_VERSION mismatch),
+  # rebuild it against the current Node. Works on Linux and macOS.
+  if ! node -e "require('better-sqlite3')" >/dev/null 2>&1; then
+    log_warn "Native module mismatch — rebuilding better-sqlite3 for current Node..."
+    if npm rebuild better-sqlite3 >> "$OCTOALLY_DIR/logs/octoally.log" 2>&1; then
+      log_ok "Rebuild complete"
+    else
+      log_error "Rebuild failed — see $OCTOALLY_DIR/logs/octoally.log"
+      exit 1
+    fi
+  fi
+
   env NODE_ENV=production node dist/index.js >> "$OCTOALLY_DIR/logs/octoally.log" 2>&1 &
   local pid=$!
   echo "$pid" > "$PID_FILE"

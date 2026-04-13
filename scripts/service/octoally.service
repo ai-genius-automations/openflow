@@ -6,6 +6,7 @@ After=network.target
 Type=simple
 User=__USER__
 WorkingDirectory=__OCTOALLY_DIR__/server
+ExecStartPre=/bin/sh -c '/usr/bin/node -e "require(\'better-sqlite3\')" 2>/dev/null || /usr/bin/npm rebuild better-sqlite3'
 ExecStart=/usr/bin/node dist/index.js
 Restart=on-failure
 RestartSec=5

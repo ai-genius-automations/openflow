@@ -172,6 +172,22 @@ function runInstallOrUpdate(version) {
     stdio: "inherit",
   });
 
+  // Verify better-sqlite3 loads on the current Node. If npm pulled a prebuilt
+  // binary that doesn't match this Node's NODE_MODULE_VERSION (happens when
+  // the user's Node version differs from what the prebuilt targets), rebuild
+  // from source. Works on Linux and macOS.
+  try {
+    execSync(`node -e "require('better-sqlite3')"`, {
+      cwd: join(INSTALL_DIR, "server"),
+      stdio: "pipe",
+    });
+  } catch {
+    log(CYAN, "Rebuilding better-sqlite3 for current Node...");
+    execSync(`npm rebuild better-sqlite3 --prefix "${INSTALL_DIR}/server"`, {
+      stdio: "inherit",
+    });
+  }
+
   // Setup CLI symlink
   execSync(`chmod +x "${LOCAL_CLI}"`, { stdio: "pipe" });
   const binDir = join(homedir(), ".local", "bin");
