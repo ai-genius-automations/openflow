@@ -272,3 +272,14 @@ Contributions are welcome! Please open an issue or pull request.
 You are free to use, modify, and distribute OctoAlly. You may use it as a tool in your workflow to build products you charge for. However, you may not sell products or services whose value derives substantially from OctoAlly itself. Any product that incorporates OctoAlly source code must be distributed free of charge.
 
 Copyright 2025 [AI Genius Automations](https://aigeniusautomations.com)
+
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=ai-genius-automations%2Foctoally&type=date&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=ai-genius-automations/octoally&type=date&theme=dark&legend=top-left" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=ai-genius-automations/octoally&type=date&legend=top-left" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=ai-genius-automations/octoally&type=date&legend=top-left" />
+ </picture>
+</a>
