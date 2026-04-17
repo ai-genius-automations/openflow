@@ -1,6 +1,6 @@
 {
   "name": "@octoally/server",
-  "version": "1.0.72",
+  "version": "1.0.73",
   "description": "OctoAlly backend server — Fastify + SQLite + WebSocket",
   "author": "AI Genius Automations <support@aigeniusautomations.com>",
   "license": "Apache-2.0 WITH Commons-Clause",
