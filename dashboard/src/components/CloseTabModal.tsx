@@ -25,12 +25,12 @@ export function CloseTabModal({
   onKill,
   onCancel,
 }: CloseTabModalProps) {
-  const killRef = useRef<HTMLButtonElement>(null);
+  const cancelRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
-    // Default focus on the destructive "Close & Kill" action so Enter
-    // confirms kill (most common intent when closing a stuck session).
-    killRef.current?.focus();
+    // Default focus on Cancel — Enter on a destructive action is too easy to
+    // trigger accidentally when the modal pops up from a stray shortcut.
+    cancelRef.current?.focus();
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') onCancel();
     };
@@ -93,6 +93,7 @@ export function CloseTabModal({
           style={{ borderTop: '1px solid var(--border)', background: 'var(--bg-secondary)' }}
         >
           <button
+            ref={cancelRef}
             onClick={onCancel}
             className="px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
             style={{
@@ -116,7 +117,6 @@ export function CloseTabModal({
             Hide Tab
           </button>
           <button
-            ref={killRef}
             onClick={onKill}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs font-medium transition-colors"
             style={{
