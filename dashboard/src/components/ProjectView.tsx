@@ -646,6 +646,25 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
     return () => document.removeEventListener('mousedown', handleClick);
   }, [showAdoptMenu]);
 
+  async function handleResumeExternal(s: ScannedSession) {
+    setShowScanAllMenu(false);
+    try {
+      const result = await api.sessions.resumeExternal(
+        s.pid,
+        s.sessionId,
+        s.projectPath,
+        s.task,
+        s.projectPath === projectPath ? projectId : undefined,
+      );
+      const sid = result.session.id;
+      await queryClient.invalidateQueries({ queryKey: ['sessions'] });
+      queryClient.invalidateQueries({ queryKey: ['scan-all-sessions'] });
+      handleSessionCreated(sid, undefined, 'session');
+    } catch (err) {
+      console.error('Failed to resume external session:', err);
+    }
+  }
+
   // Close scan-all menu on outside click
   useEffect(() => {
     if (!showScanAllMenu) return;
@@ -1293,13 +1312,17 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                           const isCurrent = s.projectPath === projectPath;
                           const shortPath = s.projectPath.replace(/^\/home\/[^/]+/, '~');
                           return (
-                            <div
+                            <button
                               key={s.pid}
-                              className="px-3 py-2 text-xs"
+                              onClick={() => handleResumeExternal(s)}
+                              className="w-full text-left px-3 py-2 text-xs transition-colors"
                               style={{
                                 color: 'var(--text-primary)',
                                 borderLeft: isCurrent ? '2px solid #ef4444' : '2px solid transparent',
+                                background: 'transparent',
                               }}
+                              onMouseEnter={(e) => (e.currentTarget.style.background = 'rgba(239,68,68,0.07)')}
+                              onMouseLeave={(e) => (e.currentTarget.style.background = 'transparent')}
                             >
                               <div className="flex items-center gap-1.5">
                                 <span
@@ -1320,10 +1343,10 @@ export function ProjectView({ projectId, projectPath, projectName: _projectName,
                               </div>
                               {s.startedAt && (
                                 <div className="mt-0.5" style={{ color: 'var(--text-secondary)', fontSize: '10px' }}>
-                                  {new Date(s.startedAt).toLocaleString()}
+                                  {new Date(s.startedAt).toLocaleString()} · click to resume in OctoAlly
                                 </div>
                               )}
-                            </div>
+                            </button>
                           );
                         })
                       )}

@@ -136,6 +136,7 @@ interface PendingSpawn {
   projectId?: string;
   socketPath?: string;  // for adopt mode
   cliType?: 'claude' | 'codex';
+  resumeSessionId?: string;  // for --resume <id> when resuming external sessions
 }
 const pendingSpawns = new Map<string, PendingSpawn>();
 
@@ -865,7 +866,7 @@ export function createSession(_projectPath: string, task: string, projectId?: st
   return db.prepare('SELECT * FROM sessions WHERE id = ?').get(id) as Session;
 }
 
-export async function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude'): Promise<void> {
+export async function spawnSession(sessionId: string, projectPath: string, task: string, cols = 180, rows = 40, cliType: 'claude' | 'codex' = 'claude', resumeSessionId?: string): Promise<void> {
   const preSpawnFiles = snapshotClaudeSessionFiles(projectPath);
 
   const worker = await forkWorker();
@@ -882,6 +883,11 @@ export async function spawnSession(sessionId: string, projectPath: string, task:
   const proj = getDb().prepare('SELECT skip_permissions FROM projects WHERE path = ?').get(projectPath) as { skip_permissions: number } | undefined;
   if (proj?.skip_permissions && cliType === 'claude' && !sessionCommand.includes('--dangerously-skip-permissions')) {
     sessionCommand += ' --dangerously-skip-permissions';
+  }
+
+  // Resume an existing claude session by ID (e.g. adopted from external process)
+  if (resumeSessionId && cliType === 'claude') {
+    sessionCommand += ` --resume ${resumeSessionId}`;
   }
 
   // Tell the worker to spawn the session
@@ -2143,6 +2149,36 @@ export async function scanAllClaudeSessions(): Promise<ScannedSession[]> {
   }
 
   return results;
+}
+
+// Kill an external claude process and resume its conversation inside OctoAlly.
+// Returns the new OctoAlly session so the caller can register it as a tab.
+export async function resumeExternalSession(
+  pid: number,
+  externalSessionId: string,
+  projectPath: string,
+  task: string,
+  projectId?: string,
+): Promise<Session> {
+  // Gracefully stop the external process so it flushes its state before we resume
+  try {
+    process.kill(pid, 'SIGTERM');
+    // Give claude up to 1.5 s to write its shutdown checkpoint
+    await new Promise<void>((resolve) => setTimeout(resolve, 1500));
+  } catch { /* already dead */ }
+
+  const session = createSession(projectPath, task, projectId);
+  registerPendingSpawn(session.id, {
+    projectPath,
+    task,
+    mode: 'session',
+    projectId,
+    cliType: 'claude',
+    resumeSessionId: externalSessionId,
+  });
+
+  pushSystemEvent(`[OctoAlly] Resuming external session ${externalSessionId}: ${task.slice(0, 60)}`);
+  return session;
 }
 
 export async function adoptDtachSession(socketPath: string, projectId?: string): Promise<Session | null> {

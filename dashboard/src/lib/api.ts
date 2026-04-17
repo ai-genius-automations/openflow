@@ -38,6 +38,11 @@ export const api = {
     },
     scanAll: () =>
       fetchJSON<{ sessions: ScannedSession[] }>('/sessions/scan-all'),
+    resumeExternal: (pid: number, sessionId: string, projectPath: string, task: string, projectId?: string) =>
+      fetchJSON<{ ok: boolean; session: Session }>('/sessions/resume-external', {
+        method: 'POST',
+        body: JSON.stringify({ pid, session_id: sessionId, project_path: projectPath, task, project_id: projectId }),
+      }),
     adopt: (socketPath: string, projectId?: string) =>
       fetchJSON<{ ok: boolean; session: Session }>('/sessions/adopt', {
         method: 'POST',
