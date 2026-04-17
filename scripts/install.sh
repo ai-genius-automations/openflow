@@ -455,12 +455,54 @@ fi
 if command -v hivecommand &>/dev/null; then
   hivecommand stop 2>/dev/null || true
 fi
-# Fallback: kill any remaining server process on our port
+# Fallback: kill any remaining server process on our port. Respect a
+# user-customized port — read from existing server/.env or settings DB before
+# the extraction replaces $INSTALL_DIR. Falls back to 42010.
+_resolve_install_port() {
+  local default_port=42010
+  if [ -n "${PORT:-}" ] && [[ "${PORT}" =~ ^[0-9]+$ ]]; then echo "$PORT"; return; fi
+  local env_file="$INSTALL_DIR/server/.env"
+  if [ -f "$env_file" ]; then
+    local p
+    p=$(grep -E '^[[:space:]]*PORT[[:space:]]*=' "$env_file" 2>/dev/null | tail -1 \
+        | sed -E 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//; s/[[:space:]]*$//' || true)
+    if [[ "$p" =~ ^[0-9]+$ ]]; then echo "$p"; return; fi
+  fi
+  local db="$TARGET_HOME/.octoally/octoally.db"
+  if [ -f "$db" ]; then
+    local p=""
+    if command -v sqlite3 >/dev/null 2>&1; then
+      p=$(sqlite3 "$db" "SELECT value FROM settings WHERE key='server_port' LIMIT 1;" 2>/dev/null || true)
+    elif command -v node >/dev/null 2>&1 && [ -d "$INSTALL_DIR/server/node_modules/better-sqlite3" ]; then
+      p=$(DB="$db" NM="$INSTALL_DIR/server/node_modules" node -e '
+        try { const D=require(process.env.NM+"/better-sqlite3");
+          const db=new D(process.env.DB,{readonly:true,fileMustExist:true});
+          const r=db.prepare("SELECT value FROM settings WHERE key=?").get("server_port");
+          db.close(); if(r&&r.value) process.stdout.write(String(r.value));
+        } catch(e){}' 2>/dev/null || true)
+    fi
+    if [[ "$p" =~ ^[0-9]+$ ]]; then echo "$p"; return; fi
+  fi
+  echo "$default_port"
+}
+KILL_PORT="$(_resolve_install_port)"
 if command -v fuser &>/dev/null; then
-  fuser -k 42010/tcp 2>/dev/null || true
+  if fuser -s "${KILL_PORT}/tcp" 2>/dev/null; then
+    log_info "Force-stopping process on port ${KILL_PORT}..."
+    fuser -k -TERM "${KILL_PORT}/tcp" 2>/dev/null || true
+    sleep 1
+    fuser -s "${KILL_PORT}/tcp" 2>/dev/null && fuser -k -KILL "${KILL_PORT}/tcp" 2>/dev/null || true
+  fi
 elif command -v lsof &>/dev/null; then
   # macOS: lsof is available where fuser is not
-  lsof -ti tcp:42010 2>/dev/null | xargs kill -9 2>/dev/null || true
+  pids="$(lsof -ti "tcp:${KILL_PORT}" 2>/dev/null || true)"
+  if [ -n "$pids" ]; then
+    log_info "Force-stopping process on port ${KILL_PORT}..."
+    echo "$pids" | xargs -r kill -TERM 2>/dev/null || true
+    sleep 1
+    pids="$(lsof -ti "tcp:${KILL_PORT}" 2>/dev/null || true)"
+    [ -n "$pids" ] && echo "$pids" | xargs -r kill -KILL 2>/dev/null || true
+  fi
 fi
 
 # Kill running desktop app — SIGTERM first, then SIGKILL after 1s.

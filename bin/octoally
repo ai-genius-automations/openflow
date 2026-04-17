@@ -53,11 +53,102 @@ OS="$(detect_os)"
 
 # PID file for direct-run mode (non-service)
 PID_FILE="$OCTOALLY_DIR/.octoally.pid"
+DEFAULT_PORT=42010
+DB_PATH="$HOME/.octoally/octoally.db"
+
+# Resolve the configured server port — respects user-customized port.
+# Priority: $PORT env var → $OCTOALLY_DIR/server/.env → settings DB → default.
+_resolve_server_port() {
+  # 1. PORT env var
+  if [ -n "${PORT:-}" ] && [[ "${PORT}" =~ ^[0-9]+$ ]]; then
+    echo "$PORT"; return
+  fi
+  # 2. server/.env PORT=
+  local env_file="$OCTOALLY_DIR/server/.env"
+  if [ -f "$env_file" ]; then
+    local env_port
+    env_port=$(grep -E '^[[:space:]]*PORT[[:space:]]*=' "$env_file" 2>/dev/null \
+      | tail -1 \
+      | sed -E 's/^[[:space:]]*PORT[[:space:]]*=[[:space:]]*//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//; s/[[:space:]]*$//' \
+      || true)
+    if [[ "$env_port" =~ ^[0-9]+$ ]]; then echo "$env_port"; return; fi
+  fi
+  # 3. SQLite settings table (key = server_port)
+  if [ -f "$DB_PATH" ]; then
+    local db_port=""
+    if command -v sqlite3 >/dev/null 2>&1; then
+      db_port=$(sqlite3 "$DB_PATH" "SELECT value FROM settings WHERE key='server_port' LIMIT 1;" 2>/dev/null || true)
+    elif command -v node >/dev/null 2>&1; then
+      local nm="$OCTOALLY_DIR/server/node_modules"
+      if [ -d "$nm/better-sqlite3" ]; then
+        db_port=$(DB="$DB_PATH" NM="$nm" node -e '
+          try {
+            const D = require(process.env.NM + "/better-sqlite3");
+            const db = new D(process.env.DB, { readonly: true, fileMustExist: true });
+            const row = db.prepare("SELECT value FROM settings WHERE key=?").get("server_port");
+            db.close();
+            if (row && row.value) process.stdout.write(String(row.value));
+          } catch(e){}' 2>/dev/null || true)
+      fi
+    fi
+    if [[ "$db_port" =~ ^[0-9]+$ ]]; then echo "$db_port"; return; fi
+  fi
+  echo "$DEFAULT_PORT"
+}
+
+# True if something is listening on the given TCP port.
+_port_in_use() {
+  local port="$1"
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -s "${port}/tcp" 2>/dev/null
+  elif command -v lsof >/dev/null 2>&1; then
+    [ -n "$(lsof -ti "tcp:${port}" 2>/dev/null)" ]
+  else
+    # No detector available — assume free; worst case the kill is a no-op
+    return 1
+  fi
+}
+
+# Terminate all processes bound to the given TCP port: SIGTERM, wait, SIGKILL.
+# Safe to call when nothing is on the port (no-op).
+_force_kill_port() {
+  local port="$1"
+  _port_in_use "$port" || return 0
+  log_warn "Force-stopping process on port ${port}..."
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -TERM "${port}/tcp" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -TERM 2>/dev/null || true
+  fi
+  # Wait up to 3s for graceful exit
+  for _ in 1 2 3 4 5 6; do
+    _port_in_use "$port" || return 0
+    sleep 0.5
+  done
+  # Still bound — escalate
+  if command -v fuser >/dev/null 2>&1; then
+    fuser -k -KILL "${port}/tcp" 2>/dev/null || true
+  elif command -v lsof >/dev/null 2>&1; then
+    lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -KILL 2>/dev/null || true
+  fi
+}
 
 cmd_start() {
+  local port
+  port=$(_resolve_server_port)
+
   if [ -f "$PID_FILE" ] && kill -0 "$(cat "$PID_FILE")" 2>/dev/null; then
     log_warn "OctoAlly is already running (PID $(cat "$PID_FILE"))"
     return 0
+  fi
+  # Stale PID file — remove before starting
+  [ -f "$PID_FILE" ] && rm -f "$PID_FILE"
+
+  # Port pre-flight: avoid silently EADDRINUSE-ing into the log file
+  if _port_in_use "$port"; then
+    log_error "Port ${port} is already in use by another process."
+    log_info "Run 'octoally stop' to clear it, or 'octoally restart'."
+    exit 1
   fi
 
   log_info "Starting OctoAlly server..."
@@ -81,10 +172,11 @@ cmd_start() {
   local pid=$!
   echo "$pid" > "$PID_FILE"
   log_ok "OctoAlly started (PID $pid)"
-  log_info "Dashboard: http://localhost:42010"
+  log_info "Dashboard: http://localhost:${port}"
 }
 
 cmd_stop() {
+  local stopped_via_pid=false
   if [ -f "$PID_FILE" ]; then
     local pid
     pid=$(cat "$PID_FILE")
@@ -96,16 +188,26 @@ cmd_stop() {
         sleep 0.5
       done
       if kill -0 "$pid" 2>/dev/null; then
+        log_warn "Graceful stop timed out — sending SIGKILL"
         kill -9 "$pid" 2>/dev/null || true
       fi
-      rm -f "$PID_FILE"
-      log_ok "OctoAlly stopped"
-    else
-      rm -f "$PID_FILE"
-      log_warn "OctoAlly was not running (stale PID file removed)"
+      stopped_via_pid=true
     fi
+    rm -f "$PID_FILE"
+  fi
+
+  # Port-based fallback — catches the stale-PID-file scenario where the server
+  # is still bound (e.g., PID file was deleted, or the running server was
+  # spawned outside this CLI). Uses the user's configured port.
+  local port
+  port=$(_resolve_server_port)
+  if _port_in_use "$port"; then
+    _force_kill_port "$port"
+    log_ok "OctoAlly stopped (cleared port ${port})"
+  elif [ "$stopped_via_pid" = true ]; then
+    log_ok "OctoAlly stopped"
   else
-    log_warn "OctoAlly is not running (no PID file)"
+    log_info "OctoAlly is not running"
   fi
 }
 

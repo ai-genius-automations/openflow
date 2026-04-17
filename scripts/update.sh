@@ -111,7 +111,31 @@ npm install 2>&1 | tail -1
 npm run build 2>&1 | tail -1
 log_ok "Dashboard rebuilt"
 
-# Restart server if running (service or manual)
+# Kill desktop app first — otherwise its server-manager auto-restarts the
+# stopped server mid-update and we race against our own rebuild. SIGTERM then
+# SIGKILL (mirrors install.sh). Covers both current and legacy process names.
+for pattern in "octoally-desktop" "hivecommand-desktop"; do
+  if pgrep -f "$pattern" >/dev/null 2>&1; then
+    log_info "Stopping desktop app ($pattern)..."
+    pkill -TERM -f "$pattern" 2>/dev/null || true
+    sleep 1
+    pkill -KILL -f "$pattern" 2>/dev/null || true
+  fi
+done
+# macOS app bundle name
+if [ "$(uname -s)" = "Darwin" ] && pgrep -f "OctoAlly.app/Contents/MacOS" >/dev/null 2>&1; then
+  log_info "Stopping OctoAlly.app..."
+  osascript -e 'tell application "OctoAlly" to quit' 2>/dev/null || true
+  for _ in 1 2 3 4 5; do
+    pgrep -f "OctoAlly.app/Contents/MacOS" >/dev/null 2>&1 || break
+    sleep 0.5
+  done
+  pkill -f "OctoAlly.app/Contents/MacOS" 2>/dev/null || true
+  sleep 0.5
+  pkill -9 -f "OctoAlly.app/Contents/MacOS" 2>/dev/null || true
+fi
+
+# Restart server — service-managed or manual.
 if [ "$(uname -s)" = "Linux" ] && systemctl is-active --quiet octoally 2>/dev/null; then
   log_info "Restarting systemd service..."
   sudo systemctl restart octoally
@@ -122,14 +146,14 @@ elif [ "$(uname -s)" = "Darwin" ] && launchctl list com.aigenius.octoally &>/dev
   launchctl start com.aigenius.octoally 2>/dev/null || true
   log_ok "Service restarted"
 else
+  # Manual/CLI-managed. The hardened cmd_stop in bin/octoally clears the user's
+  # configured port even when the PID file is stale, and cmd_start preflight-
+  # checks the port so silent port-bind failures surface as clear errors.
   CLI_PATH="$(command -v octoally 2>/dev/null || echo "$OCTOALLY_DIR/bin/octoally")"
-  if ("$CLI_PATH" status 2>/dev/null || true) | grep -q 'running'; then
-    log_info "Restarting running server..."
-    "$CLI_PATH" stop 2>/dev/null || true
-    sleep 1
-    "$CLI_PATH" start 2>/dev/null || true
-    log_ok "Server restarted"
-  fi
+  log_info "Restarting server..."
+  "$CLI_PATH" stop 2>/dev/null || true
+  "$CLI_PATH" start 2>/dev/null || true
+  log_ok "Server restarted"
 fi
 
 log_ok "Update complete ($CURRENT_HASH → $NEW_HASH)"
