@@ -555,8 +555,17 @@ fi
 cd "$INSTALL_DIR" || cd /
 log_info "Installing server dependencies..."
 if ! npm install --omit=dev --prefix "$INSTALL_DIR/server" 2>&1; then
-  log_error "npm install failed — see errors above"
-  exit 1
+  # On Node 22+, node-gyp 11.x has a known post-build ENOENT on
+  # `build/node_gyp_bins` that exits non-zero even when the native module
+  # actually built successfully. If better-sqlite3 and node-pty load, the
+  # install is functionally complete — accept it and continue.
+  if (cd "$INSTALL_DIR/server" \
+       && node -e "require('better-sqlite3'); require('node-pty-prebuilt-multiarch')") >/dev/null 2>&1; then
+    log_warn "npm install exited non-zero, but native modules load — continuing"
+  else
+    log_error "npm install failed — see errors above"
+    exit 1
+  fi
 fi
 
 log_ok "OctoAlly v${VERSION} installed to $INSTALL_DIR"
