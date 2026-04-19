@@ -90,6 +90,19 @@ function runInstallOrUpdate(version) {
   log(CYAN, `Downloading v${version}...`);
   execSync(`curl -fsSL -o "${tmpFile}" "${tarballUrl}"`, { stdio: "inherit" });
 
+  // Kill desktop app FIRST. The desktop supervises the server child and
+  // auto-respawns it the moment we stop the server, creating an orphaned
+  // old-version node process (re-parented to systemd --user on Linux) that
+  // keeps binding port 42010 and holds the old dist/ in memory even after
+  // rm -rf replaces files on disk. Must happen before "octoally stop".
+  if (process.platform === "linux") {
+    try { execSync('pkill -9 -f "octoally-desktop"', { stdio: "pipe" }); } catch {}
+  } else if (process.platform === "darwin") {
+    try { execSync('pkill -9 -f "OctoAlly"', { stdio: "pipe" }); } catch {}
+  }
+  // Brief pause so any spawned server child settles before we stop it
+  try { execSync("sleep 1", { stdio: "pipe" }); } catch {}
+
   // Stop server if running (detect service vs PID)
   let serviceType = null; // "systemd", "launchd", or null (PID-based)
   if (process.platform === "linux") {
