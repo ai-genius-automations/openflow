@@ -121,7 +121,7 @@ _resolve_server_port() {
 # True if something is listening on the given TCP port.
 _port_in_use() {
   local port="$1"
-  if command -v fuser >/dev/null 2>&1; then
+  if [ "$(uname -s)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
     fuser -s "${port}/tcp" 2>/dev/null
   elif command -v lsof >/dev/null 2>&1; then
     [ -n "$(lsof -ti "tcp:${port}" 2>/dev/null)" ]
@@ -137,7 +137,7 @@ _force_kill_port() {
   local port="$1"
   _port_in_use "$port" || return 0
   log_warn "Force-stopping process on port ${port}..."
-  if command -v fuser >/dev/null 2>&1; then
+  if [ "$(uname -s)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
     fuser -k -TERM "${port}/tcp" 2>/dev/null || true
   elif command -v lsof >/dev/null 2>&1; then
     lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -TERM 2>/dev/null || true
@@ -148,7 +148,7 @@ _force_kill_port() {
     sleep 0.5
   done
   # Still bound — escalate
-  if command -v fuser >/dev/null 2>&1; then
+  if [ "$(uname -s)" = "Linux" ] && command -v fuser >/dev/null 2>&1; then
     fuser -k -KILL "${port}/tcp" 2>/dev/null || true
   elif command -v lsof >/dev/null 2>&1; then
     lsof -ti "tcp:${port}" 2>/dev/null | xargs -r kill -KILL 2>/dev/null || true

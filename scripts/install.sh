@@ -486,7 +486,11 @@ _resolve_install_port() {
   echo "$default_port"
 }
 KILL_PORT="$(_resolve_install_port)"
-if command -v fuser &>/dev/null; then
+# Linux uses GNU fuser (-s/-k/port/tcp). macOS ships a totally different
+# `fuser` that takes -cfu and file paths only — invoking it with Linux
+# syntax prints the macOS usage banner. Gate fuser on Linux and let
+# Darwin (and other BSDs) fall through to lsof.
+if [ "$OS" = "Linux" ] && command -v fuser &>/dev/null; then
   if fuser -s "${KILL_PORT}/tcp" 2>/dev/null; then
     log_info "Force-stopping process on port ${KILL_PORT}..."
     fuser -k -TERM "${KILL_PORT}/tcp" 2>/dev/null || true
@@ -494,7 +498,6 @@ if command -v fuser &>/dev/null; then
     fuser -s "${KILL_PORT}/tcp" 2>/dev/null && fuser -k -KILL "${KILL_PORT}/tcp" 2>/dev/null || true
   fi
 elif command -v lsof &>/dev/null; then
-  # macOS: lsof is available where fuser is not
   pids="$(lsof -ti "tcp:${KILL_PORT}" 2>/dev/null || true)"
   if [ -n "$pids" ]; then
     log_info "Force-stopping process on port ${KILL_PORT}..."
