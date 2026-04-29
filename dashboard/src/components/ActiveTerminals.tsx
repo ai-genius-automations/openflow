@@ -89,7 +89,9 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
         const containerHeight = scrollContainerRef.current.clientHeight;
         const gap = 16; // gap-4 = 16px
         const padding = 32; // p-4 = 16px * 2
-        const height = Math.round((containerHeight - padding - gap * (rows - 1)) / rows);
+        // Floor (not round) so the summed card heights + gaps + padding never
+        // exceed the container — rounding up by even 1px triggers a scrollbar.
+        const height = Math.floor((containerHeight - padding - gap * (rows - 1)) / rows);
         setCardHeight(Math.max(150, height));
       } else {
         if (!gridRef.current) return;
@@ -102,8 +104,19 @@ export function ActiveTerminals({ onBack, onGoToSession, openProjectIds, hiddenS
     }
     updateHeight();
     window.addEventListener('resize', updateHeight);
-    return () => window.removeEventListener('resize', updateHeight);
-  }, [columns, rows]);
+    // Observe the scroll container directly so we recompute when the tray
+    // appears/disappears or wraps to a new line — both shrink the available
+    // height without firing a window resize event.
+    let ro: ResizeObserver | null = null;
+    if (scrollContainerRef.current && typeof ResizeObserver !== 'undefined') {
+      ro = new ResizeObserver(() => updateHeight());
+      ro.observe(scrollContainerRef.current);
+    }
+    return () => {
+      window.removeEventListener('resize', updateHeight);
+      ro?.disconnect();
+    };
+  }, [columns, rows, minimizedSessionIds]);
 
   // Force terminal redraw on mount — terminals render before the grid is laid out,
   // so nudge cardHeight by ±1px after paint to trigger ResizeObserver in each Terminal,
